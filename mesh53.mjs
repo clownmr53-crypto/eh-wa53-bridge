@@ -96,6 +96,7 @@ async function pollCommands() {
   try {
     const rows = await sb('GET', 'eh_commands?status=eq.pending&target=in.(wa53,all)&order=id.asc&limit=5&select=*');
     for (const c of rows || []) {
+      if (c.params && c.params.wait_open && getState().status !== 'open') continue; // V4d: run only once WhatsApp is connected
       const got = await sb('PATCH', `eh_commands?id=eq.${c.id}&status=eq.pending`, { status: 'running', claimed_by: WHO, claimed_at: new Date().toISOString() }, 'return=representation');
       if (!got?.length) continue;
       let res; try { res = await exec(got[0]); } catch (e) { res = { ok: false, error: String(e.message || e).slice(0, 300) }; }
