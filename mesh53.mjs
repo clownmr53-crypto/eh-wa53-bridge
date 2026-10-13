@@ -121,7 +121,7 @@ async function fbImage(id) {
   const q = new URLSearchParams({ key: FB_KEY }); if (id) q.set('id', id);
   const j = await (await fetch(`${FB_URL}/admin/preview?${q}`, { signal: AbortSignal.timeout(45000) })).json();
   if (!j.ok && id) return fbImage(null);
-  if (!j.ok || !j.product_id || /affiche_EH|logo/i.test(String(j.image_source))) return { error: 'fb preview ' + (j.image_source || j.error || 'ko') };
+  if (!j.ok || !j.product_id || /affiche_EH/i.test(String(j.image_source))) return { error: 'fb preview ' + (j.image_source || j.error || 'ko') };
   q.set('id', j.product_id); q.set('png', '1'); if (j.layout != null) q.set('layout', String(j.layout));
   const r = await fetch(`${FB_URL}/admin/preview?${q}`, { signal: AbortSignal.timeout(45000) }); if (!r.ok) return { error: 'fb png ' + r.status };
   const buf = Buffer.from(await r.arrayBuffer()); if (buf.length < 10000) return { error: 'fb png small' };
@@ -140,7 +140,7 @@ async function postStatus({ manual = false, slot, product } = {}) {
     event('wa53_status', { id: fbr.id, name: fbr.label, image_source: fbr.source, caption: cap.slice(0, 300), recipients: out.n, wid: out.id, manual, slot }); await flush();
     return { ok: !!out.id, product: fbr.label, image_source: fbr.source, caption: cap, recipients: out.n, wid: out.id };
   }
-  if (FB_KEY) console.error('[mesh] status fb image failed, fallback catalog', fbr && fbr.error);
+  return { ok: false, error: 'pas d image officielle (' + String(fbr && fbr.error || 'fb preview') + ') — jamais de photo fournisseur' }; // V4d: no catalog/supplier fallback
   const all = (await stProducts()).filter(x => !/logo|electronic[-_ ]?house|\/eh[-_.]/i.test(x.img)); if (!all.length) return { ok: false, error: 'aucun produit avec vraie image' };
   let recent = []; try { recent = (await sb('GET', `eh_events?type=eq.wa53_status&ts=gte.${new Date(Date.now() - 3 * 864e5).toISOString()}&select=data`)).map(x => x.data && x.data.id); } catch {}
   const gem = all.filter(x => /google one|gemini/i.test(x.name));
@@ -194,7 +194,7 @@ async function postChannel({ manual = false, slot, product } = {}) {
   let buf, cap, id, name, src;
   const fbr = await fbImage(todayN === 0 && !product ? 'dig:ia-multi' : null).catch(e => ({ error: String(e.message || e) })); // Google One Gemini first each day
   if (fbr && fbr.buf) { buf = fbr.buf; id = fbr.id; name = fbr.label; src = fbr.source; cap = String(fbr.caption || '').replace(/\s+\n/g, '\n').slice(0, 650); }
-  else {
+  else { return { ok: false, error: 'pas d image officielle — jamais de photo fournisseur' };
     const all = (await stProducts()).filter(x => !/logo|electronic[-_ ]?house|\/eh[-_.]/i.test(x.img)); if (!all.length) return { ok: false, error: 'aucun produit avec vraie image' };
     let recent = []; try { recent = (await sb('GET', `eh_events?type=eq.wa53_channel_post&ts=gte.${new Date(Date.now() - 4 * 864e5).toISOString()}&select=data`)).map(x => x.data && x.data.id); } catch {}
     const gem = all.filter(x => /google one|gemini/i.test(x.name)); let pick = product ? all.find(x => x.name.toLowerCase().includes(String(product).toLowerCase())) : null;
