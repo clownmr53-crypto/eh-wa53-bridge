@@ -170,7 +170,7 @@ async function chSettings() { try { const r = await sb('GET', 'eh_settings?key=i
 async function ensureChannel(st) {
   if (st.ch && st.ch.jid) return st.ch;
   if (!ctx.channelCreate) return null;
-  try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_create:v1', data: {} }, 'return=minimal'); } catch { return null; } // created (or being created) by an instance already
+  try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_create:v2', data: {} }, 'return=minimal'); } catch { return null; } // created (or being created) by an instance already
   try {
     const r = await ctx.channelCreate('Electronic HOUSE', 'Nouveautés, téléphones, logiciels et abonnements Electronic HOUSE. Écrivez-nous sur WhatsApp : wa.me/2290153632000');
     const ch = { jid: r.id, invite: r.invite || null, link: r.invite ? 'https://whatsapp.com/channel/' + r.invite : null, created_at: new Date().toISOString() };
