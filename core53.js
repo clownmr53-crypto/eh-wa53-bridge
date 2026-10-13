@@ -6132,6 +6132,7 @@ __name(writeProviderDead, "writeProviderDead");
 __name2(writeProviderDead, "writeProviderDead");
 __name22(writeProviderDead, "writeProviderDead");
 async function isProviderDead(name) {
+  try { if (typeof __S !== "undefined" && __S.AI_REST && Number(__S.AI_REST[name] || 0) > Date.now() && __S.FORCE_PROVIDER !== name) return true; } catch {}
   const map = await readProviderDead();
   return Number(map[name] || 0) > Date.now();
 }
@@ -6160,6 +6161,7 @@ async function markProviderDead(name, err) {
       delete map[k];
   map[name] = now + PROVIDER_DEAD_MS;
   await writeProviderDead(map);
+  try { __AIH(name, false, 0, e, Math.round(PROVIDER_DEAD_MS / 1e3)); } catch {}
   console.error("provider_dead", name, String(err || "").slice(0, 140));
 }
 __name(markProviderDead, "markProviderDead");
@@ -6224,7 +6226,10 @@ __name2(callWorkersAi, "callWorkersAi");
 __name22(callWorkersAi, "callWorkersAi");
 async function runAiChain(env, msgs, { max_tokens = 320, temperature = AI_TEMP, deadline = Date.now() + AI_CLOUD_BUDGET_MS, skip = [] } = {}) {
   const errors = [];
-  for (const p of AI_PROVIDERS) {
+  const __F = typeof __S !== "undefined" && __S.FORCE_PROVIDER; // V2: forced provider first (eh_ai_health.forced_until)
+  const __ORDER = __F ? [...AI_PROVIDERS.filter((x) => x.name === __F), ...AI_PROVIDERS.filter((x) => x.name !== __F)] : AI_PROVIDERS;
+  for (const p of __ORDER) {
+    const __t0 = Date.now();
     if (skip.includes(p.name))
       continue;
     if (!env[p.key])
@@ -6246,6 +6251,7 @@ async function runAiChain(env, msgs, { max_tokens = 320, temperature = AI_TEMP, 
       ]);
       if (r && r.ok && r.text && String(r.text).trim()) {
         await markProviderAlive(p.name);
+        try { __AIH(p.name, true, Date.now() - __t0, null); } catch {}
         return { ok: true, text: String(r.text), model: r.model || p.name, provider: p.name, errors };
       }
       errors.push(`${p.name}: ${r && r.err || "empty"}`);

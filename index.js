@@ -35,6 +35,7 @@ const bot53 = INPROC ? await import('./bot53.mjs') : null;
 const media53 = INPROC ? await import('./media53.mjs') : null;
 const ar53 = INPROC ? await import('./alwaysreply53.mjs') : null; // always-reply fallback (2026-10-13)
 if (bot53) await bot53.loadSecrets();
+const mesh = await import('./mesh53.mjs'); // Système V2: Supabase bus (dedup, events, heartbeat, commands)
 const botSent = new Map(); // wid -> ts (ids sent by the bot itself; their fromMe upsert is not an owner echo)
 setInterval(() => { const n = Date.now(); for (const [k, t] of botSent) if (n - t > 9e5) botSent.delete(k); }, 6e4);
 const AUTH_DIR = path.join(__dirname, '.auth');
@@ -257,6 +258,7 @@ async function handleInbound(m) {
   const id = m.key.id; if (!id || seen.has(id)) return; seen.set(id, Date.now());
   const from = toDigits(jid);
   if (!from) return;
+  if (!(await mesh.claim(id, from))) { log.warn({ from, id }, 'dedup: message already claimed by another system'); mesh.event('msg_dup', { id }, { wa: from, msg_id: id }); return; }
   let text = '', msgType = 'text';
   const msg = m.message;
   if (msg.conversation) text = msg.conversation;
@@ -298,6 +300,8 @@ async function handleInbound(m) {
         ...(msgType === 'voice' || msgType === 'audio' ? { audio: { id: 'bridge.' + id, voice: msgType === 'voice', ...(mime ? { mime_type: mime } : {}) } } : {}) }]
     }}]}]
   };
+  mesh.inbound(from, id, msgType, text);
+  if (INPROC && mesh.isPaused() && !OWNERS.has(from)) { log.info({ from }, 'global pause (command center): no auto reply'); mesh.event('msg_skipped_paused', {}, { wa: from, msg_id: id }); return; }
   if (INPROC) { lastInTs.set(from, Number(m.messageTimestamp || Math.floor(Date.now() / 1000))); lastInboundAt = Date.now(); selfCheckArm(from, text, m.pushName || null); return runBot(body, { from, text }); }
   const r = await fetch(N8N_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-eh-bridge': '1' }, body: JSON.stringify(body) });
   log.info({ from, status: r.status, text: text.slice(0, 40) }, 'forwarded inbound');
@@ -317,7 +321,7 @@ async function botSend(payload) { // called by core53 for every Graph /messages 
   try { await sock.sendPresenceUpdate('paused', jid); } catch {}
   const out = await sock.sendMessage(jid, content);
   if (out?.key?.id) botSent.set(out.key.id, Date.now());
-  remember(out?.key, out?.message); markBotSent(out?.key?.id); selfCheckDone(digits, 'core'); lastOutAt = Date.now();
+  remember(out?.key, out?.message); markBotSent(out?.key?.id); selfCheckDone(digits, 'core'); lastOutAt = Date.now(); mesh.outbound(digits, out?.key?.id, 'core', lastIn.get(digits) ? Date.now() - lastIn.get(digits) : null);
   log.info({ to: digits, kind: payload.type, wid: out?.key?.id, ms_since_in: lastIn.get(digits) ? Date.now() - lastIn.get(digits) : null }, 'bot sent');
   return { id: out?.key?.id };
 }
@@ -438,7 +442,7 @@ async function selfCheckFire(from) {
   try { await sock.presenceSubscribe(jid); await sock.sendPresenceUpdate('composing', jid); await sleep(1200); await sock.sendPresenceUpdate('paused', jid); } catch {}
   const out = await sock.sendMessage(jid, { text: r.text });
   if (out?.key?.id) botSent.set(out.key.id, Date.now()); remember(out?.key, out?.message); markBotSent(out?.key?.id);
-  fallbackAt.set(from, Date.now()); lastOutAt = Date.now(); pend.delete(from);
+  fallbackAt.set(from, Date.now()); lastOutAt = Date.now(); pend.delete(from); mesh.outbound(from, out?.key?.id, 'fallback:' + r.via, Date.now() - p.since);
   Object.assign(ev, { via: r.via, errs: r.errs, wid: out?.key?.id, text: r.text.slice(0, 120) });
   log.warn(ev, 'selfcheck: FALLBACK reply sent');
   sb('POST', 'events', { type: 'wa53_selfcheck', source: 'bridge-inproc', data: ev }, 'return=minimal').catch(() => {});
@@ -496,7 +500,7 @@ async function pollOutbox() {
         const out = await sock.sendMessage(jid, content);
         if (out?.key?.id) botSent.set(out.key.id, Date.now()); remember(out?.key, out?.message); await markBotSent(out?.key?.id);
         await sb('PATCH', `wa53_outbox?id=eq.${r.id}`, { status: 'sent', sent_at: new Date().toISOString(), error: null });
-        log.info({ id: r.id, to: digits, kind: r.kind, wid: out?.key?.id }, 'outbox sent');
+        log.info({ id: r.id, to: digits, kind: r.kind, wid: out?.key?.id }, 'outbox sent'); mesh.outbound(digits, out?.key?.id, 'outbox');
       } catch (e) {
         await sb('PATCH', `wa53_outbox?id=eq.${r.id}`, { status: 'failed', error: String(e?.message || e).slice(0, 500) }).catch(() => {});
         log.warn({ id: r.id, err: String(e?.message || e) }, 'outbox failed');
@@ -581,6 +585,7 @@ async function lockTick() {
 async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
+mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k) });
 
 // ---- heartbeat (Supabase kv53 'wa53:hb', read by eh-relay for the down-alert) + in-process watchdog (2026-10-13) ----
 let notOpenSince = null, probeFails = 0;
