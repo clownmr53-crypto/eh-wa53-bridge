@@ -582,7 +582,8 @@ async function lockTick() {
     if (leader && Date.now() - lastHbOk > LOCK_LOSE_MS) await stopSock('heartbeat failing');
   }
 }
-async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
+// V2: KEEP_LOCK_ON_EXIT=1 (box) -> a clean restart keeps the lock, so the Render standby cannot grab it in the 5 s restart gap; it takes over only if the lock is stale > 45 s
+async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); if (process.env.KEEP_LOCK_ON_EXIT !== '1') await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
 mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k) });
