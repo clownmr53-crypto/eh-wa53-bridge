@@ -1,0 +1,6 @@
+node_modules
+.auth
+.env
+qr.png
+qr.meta.json
+*.log
