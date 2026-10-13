@@ -611,14 +611,19 @@ mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last
     const ch = (r.content || []).find(x => x.tag === 'result'); const d = ch && ch.content ? JSON.parse(ch.content.toString()) : null; if (d && d.errors) throw new Error(JSON.stringify(d.errors).slice(0, 200));
     const list = (d && d.data && d.data.xwa2_newsletter_subscribed) || [];
     return list.map(n => ({ jid: n.id, name: n.thread_metadata && n.thread_metadata.name && n.thread_metadata.name.text, invite: n.thread_metadata && n.thread_metadata.invite, role: n.viewer_metadata && n.viewer_metadata.role, created: n.thread_metadata && Number(n.thread_metadata.creation_time) })); },
-  channelDeleteOnce: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); if (jid !== '120363414491230419@newsletter' || jid === '120363430925551249@newsletter') throw new Error('target refused'); return sock.newsletterDelete(jid); }, // ONE-TIME (remove after run)
+  statusMute: async (phone) => { if (!sock || status !== 'open') throw new Error('not connected'); // V4c: hide this contact's status updates (WA Web userStatusMute, regular_high v7)
+    const pn = String(phone).replace(/\D/g, '') + '@s.whatsapp.net'; const jids = [pn];
+    try { const lid = await sock.signalRepository?.lidMapping?.getLIDForPN?.(pn); if (lid) jids.push(lid); } catch {}
+    for (const j of jids) await sock.appPatch({ syncAction: { userStatusMuteAction: { muted: true } }, index: ['userStatusMute', j], type: 'regular_high', apiVersion: 7, operation: 0 });
+    return { jids }; },
   channelMeta: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); return sock.newsletterMetadata('jid', jid); },
-  channelSend: async (jid, buf, caption) => { if (!sock || status !== 'open') throw new Error('not connected'); const out = await sock.sendMessage(jid, { image: buf, caption }); return { id: out?.key?.id || null }; },
-  sendStatus: async (buf, caption) => {
+  channelSend: async (jid, buf, caption, kind = 'image') => { if (!sock || status !== 'open') throw new Error('not connected'); const out = await sock.sendMessage(jid, kind === 'text' ? { text: caption } : kind === 'video' ? { video: buf, caption } : { image: buf, caption }); return { id: out?.key?.id || null }; },
+  sendStatus: async (buf, caption, kind = 'image') => {
   if (!sock || status !== 'open') throw new Error('not connected');
   let list = []; try { list = (await sb('GET', 'wa_contacts?line=eq.53&select=phone&order=last_seen.desc.nullslast&limit=1000') || []).map(x => String(x.phone).replace(/\D/g, '')).filter(p => p.length >= 8).map(p => p + '@s.whatsapp.net'); } catch {}
   if (me?.id) list.push(me.id.replace(/:\d+@/, '@'));
-  const out = await sock.sendMessage('status@broadcast', { image: buf, caption }, { statusJidList: [...new Set(list)], broadcast: true });
+  const content = kind === 'text' ? { text: caption } : kind === 'video' ? { video: buf, caption } : { image: buf, caption };
+  const out = await sock.sendMessage('status@broadcast', content, { statusJidList: [...new Set(list)], broadcast: true });
   return { id: out?.key?.id || null, n: list.length };
 } });
 

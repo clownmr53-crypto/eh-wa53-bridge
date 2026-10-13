@@ -84,6 +84,8 @@ async function exec(c) {
     case 'status': return { ok: true, state: getState() };
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'channel_list': return ctx.channelList ? { ok: true, list: await ctx.channelList() } : { ok: false };
+    case 'status_mute_one': { if (!ctx.statusMute) return { ok: false }; const r = await ctx.statusMute(String(p.phone || '')); event('wa53_status_mute', { p4: String(p.phone).slice(-4), ok: true, manual: true, jids: r.jids.length }); await flush(); return { ok: true, ...r }; }
+    case 'fbmirror_now': return mirrorTick({ test: !!p.test });
     case 'channel_post': return postChannel({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };
     default: return { ok: false, error: 'action inconnue pour wa53: ' + c.action };
@@ -222,17 +224,44 @@ const PEERS = (process.env.PEER_URLS || "").split(",").map(s => s.trim()).filter
 async function pingPeers() { for (const u of PEERS) { try { const r = await fetch(u, { signal: AbortSignal.timeout(25000) }); console.log("[peer]", u, r.status); } catch (x) { console.log("[peer]", u, String(x)); } } }
 if (PEERS.length) { setTimeout(pingPeers, 20000).unref(); setInterval(pingPeers, 5 * 60e3).unref(); }
 
-// ONE-TIME 2026-10-13: delete duplicate empty channel (owner approved). Leader only, claim-once, hard-checked target. Remove after run.
-const DUP_CH = '120363414491230419@newsletter', LIVE_CH = '120363430925551249@newsletter'; let dupDone = false;
-async function dupDeleteTick() {
-  if (dupDone || !ctx || !ctx.channelDeleteOnce || !getState().leader || getState().status !== 'open') return; dupDone = true;
+// ---- V4c: boss "fb mode" items (59 + 53, via eh-facebook owner queue mirror wam:*) -> 53 WhatsApp Status + Channel. Leader only, claim per group, setting wa53_fbmirror_paused ----
+let fmBusy = false;
+async function mirrorTick({ test = false } = {}) {
+  if (fmBusy || !FB_KEY || !getState().leader || getState().status !== 'open') return { skipped: 'not leader' }; fmBusy = true; const res = [];
   try {
-    const before = await ctx.channelList(); const t = before.find(n => n.jid === DUP_CH);
-    if (!t || DUP_CH === LIVE_CH || !/owner/i.test(t.role || '') || !/electronic house/i.test(t.name || '')) { event('wa53_channel_dup_delete', { skipped: 'target absent or not owned', before }); await flush(); return; }
-    try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_dup_delete:v1', data: {} }, 'return=minimal'); } catch { return; }
-    let err = null; try { await ctx.channelDeleteOnce(DUP_CH); } catch (e) { err = String(e.message || e).slice(0, 200); }
-    const after = await ctx.channelList().catch(e => 'list error ' + e.message);
-    event('wa53_channel_dup_delete', { target: DUP_CH, error: err, before: before.map(n => n.jid), after: Array.isArray(after) ? after.map(n => ({ jid: n.jid, name: n.name, role: n.role })) : after }); await flush();
-  } catch (e) { dupDone = false; console.error('[dup]', e.message); }
+    const s = await sb('GET', 'eh_settings?key=in.(wa53_fbmirror_paused,wa53_channel)&select=key,value'); const o = Object.fromEntries((s || []).map(x => [x.key, x.value]));
+    if (o.wa53_fbmirror_paused === true && !test) return { skipped: 'pause' };
+    const j = await (await fetch(`${FB_URL}/admin/wa-mirror?key=${encodeURIComponent(FB_KEY)}${test ? '&test=1' : ''}`, { signal: AbortSignal.timeout(60000) })).json();
+    for (const g of j.groups || []) {
+      try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_fbmirror_claim', line: '53', dedup_key: 'fbm:' + g.id, data: { test } }, 'return=minimal'); } catch { await fetch(`${FB_URL}/admin/wa-mirror/ack?key=${encodeURIComponent(FB_KEY)}`, { method: 'POST', body: JSON.stringify({ keys: g.keys }) }).catch(() => {}); continue; }
+      let cap = String(g.caption || ''); if (BANNED.test(cap)) cap = cap.replace(/cotonou/gi, '');
+      const items = []; for (const m of g.media) { const r = await fetch(`${FB_URL}/admin/wa-mirror/media?key=${encodeURIComponent(FB_KEY)}&k=${encodeURIComponent(m.k)}`, { signal: AbortSignal.timeout(60000) }); if (r.ok) items.push({ buf: Buffer.from(await r.arrayBuffer()), kind: m.kind }); }
+      const out = { id: g.id, status: [], channel: [] }; const ch = o.wa53_channel && o.wa53_channel.jid;
+      const list = items.length ? items : [{ buf: null, kind: 'text' }];
+      for (let i = 0; i < list.length; i++) { const it = list[i]; const c = i === 0 ? cap : '';
+        try { const st = await ctx.sendStatus(it.buf, c, it.kind); out.status.push(st.id); } catch (e) { out.status.push('err ' + String(e.message).slice(0, 80)); }
+        if (ch) { try { const r = await ctx.channelSend(ch, it.buf, c, it.kind); out.channel.push(r.id); } catch (e) { out.channel.push('err ' + String(e.message).slice(0, 80)); } } }
+      await fetch(`${FB_URL}/admin/wa-mirror/ack?key=${encodeURIComponent(FB_KEY)}`, { method: 'POST', body: JSON.stringify({ keys: g.keys }) }).catch(() => {});
+      event('wa53_fbmirror_post', { ...out, test, n_media: items.length, caption: cap.slice(0, 300) }); await flush(); res.push(out);
+    }
+  } catch (e) { console.error('[fbmirror]', String(e.message).slice(0, 120)); res.push({ error: String(e.message) }); } finally { fmBusy = false; }
+  return { ok: true, posted: res };
 }
-setInterval(() => dupDeleteTick(), 30000).unref();
+// ---- V4c: status mute bot: hide status updates of 53 contacts (backfill + new), leader only, <= cap/hour (setting wa53_status_mute_per_hour, default 30; wa53_status_mute_paused) ----
+let smBusy = false;
+async function muteTick() {
+  if (smBusy || !ctx.statusMute || !getState().leader || getState().status !== 'open') return; smBusy = true;
+  try {
+    const s = await sb('GET', 'eh_settings?key=in.(wa53_status_mute_paused,wa53_status_mute_per_hour)&select=key,value'); const o = Object.fromEntries((s || []).map(x => [x.key, x.value]));
+    if (o.wa53_status_mute_paused === true) return; const cap = Math.max(0, Math.min(Number(o.wa53_status_mute_per_hour ?? 30), 60)); if (!cap) return;
+    const hr = (await sb('GET', `eh_events?type=eq.wa53_status_mute&ts=gte.${new Date(Date.now() - 3600e3).toISOString()}&select=id`) || []).length; if (hr >= cap) return;
+    const done = new Set((await sb('GET', 'kv53?key=like.stmute:*&select=key') || []).map(x => x.key.slice(7)));
+    const cs = (await sb('GET', 'wa_contacts?line=eq.53&select=phone&order=last_seen.desc.nullslast&limit=2000') || []).map(x => String(x.phone).replace(/\D/g, '')).filter(p => p.length >= 8 && !/97342101$/.test(p) && !done.has(p));
+    const p = cs[0]; if (!p) return;
+    let r, err = null; try { r = await ctx.statusMute(p); } catch (e) { err = String(e.message || e).slice(0, 160); }
+    await sb('POST', 'kv53?on_conflict=key', { key: 'stmute:' + p, value: JSON.stringify({ at: Date.now(), err }), expires_at: new Date(Date.now() + 3650 * 864e5).toISOString() }, 'resolution=merge-duplicates,return=minimal');
+    event('wa53_status_mute', { p4: p.slice(-4), ok: !err, error: err, jids: r ? r.jids.length : 0, left: cs.length - 1 }); await flush();
+  } catch (e) { console.error('[stmute]', String(e.message).slice(0, 120)); } finally { smBusy = false; }
+}
+setInterval(() => mirrorTick().catch(() => {}), 60000).unref();
+setInterval(() => muteTick().catch(() => {}), Math.round(3600e3 / 30)).unref();
