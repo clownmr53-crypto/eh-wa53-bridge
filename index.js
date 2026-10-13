@@ -611,11 +611,6 @@ mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last
     const ch = (r.content || []).find(x => x.tag === 'result'); const d = ch && ch.content ? JSON.parse(ch.content.toString()) : null; if (d && d.errors) throw new Error(JSON.stringify(d.errors).slice(0, 200));
     const list = (d && d.data && d.data.xwa2_newsletter_subscribed) || [];
     return list.map(n => ({ jid: n.id, name: n.thread_metadata && n.thread_metadata.name && n.thread_metadata.name.text, invite: n.thread_metadata && n.thread_metadata.invite, role: n.viewer_metadata && n.viewer_metadata.role, created: n.thread_metadata && Number(n.thread_metadata.creation_time) })); },
-  statusMute: async (phone) => { if (!sock || status !== 'open') throw new Error('not connected'); // V4c: hide this contact's status updates (WA Web userStatusMute, regular_high v7)
-    const pn = String(phone).replace(/\D/g, '') + '@s.whatsapp.net'; const jids = [pn];
-    try { const lid = await sock.signalRepository?.lidMapping?.getLIDForPN?.(pn); if (lid) jids.push(lid); } catch {}
-    for (const j of jids) await sock.appPatch({ syncAction: { userStatusMuteAction: { muted: true } }, index: ['userStatusMute', j], type: 'regular_high', apiVersion: 7, operation: 0 });
-    return { jids }; },
   revokeOwn: async (jid, id) => { if (!sock || status !== 'open') throw new Error('not connected'); if (!/^(status@broadcast|\d+@newsletter)$/.test(jid)) throw new Error('jid refused'); await sock.sendMessage(jid, { delete: { remoteJid: jid, fromMe: true, id } }); return { ok: true }; }, // delete our own test status/channel post
   channelMeta: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); return sock.newsletterMetadata('jid', jid); },
   channelSend: async (jid, buf, caption, kind = 'image') => { if (!sock || status !== 'open') throw new Error('not connected'); const out = await sock.sendMessage(jid, kind === 'text' ? { text: caption } : kind === 'video' ? { video: buf, caption } : { image: buf, caption }); return { id: out?.key?.id || null }; },

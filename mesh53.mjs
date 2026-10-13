@@ -84,7 +84,6 @@ async function exec(c) {
     case 'status': return { ok: true, state: getState() };
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'channel_list': return ctx.channelList ? { ok: true, list: await ctx.channelList() } : { ok: false };
-    case 'status_mute_one': { if (!ctx.statusMute) return { ok: false }; const r = await ctx.statusMute(String(p.phone || '')); event('wa53_status_mute', { p4: String(p.phone).slice(-4), ok: true, manual: true, jids: r.jids.length }); await flush(); return { ok: true, ...r }; }
     case 'revoke_own': return ctx.revokeOwn(String(p.jid || ''), String(p.id || ''));
     case 'fbmirror_now': return mirrorTick({ test: !!p.test });
     case 'channel_post': return postChannel({ manual: true, slot: 'manual-' + c.id, product: p.product });
@@ -248,21 +247,4 @@ async function mirrorTick({ test = false } = {}) {
   } catch (e) { console.error('[fbmirror]', String(e.message).slice(0, 120)); res.push({ error: String(e.message) }); } finally { fmBusy = false; }
   return { ok: true, posted: res };
 }
-// ---- V4c: status mute bot: hide status updates of 53 contacts (backfill + new), leader only, <= cap/hour (setting wa53_status_mute_per_hour, default 30; wa53_status_mute_paused) ----
-let smBusy = false;
-async function muteTick() {
-  if (smBusy || !ctx.statusMute || !getState().leader || getState().status !== 'open') return; smBusy = true;
-  try {
-    const s = await sb('GET', 'eh_settings?key=in.(wa53_status_mute_paused,wa53_status_mute_per_hour)&select=key,value'); const o = Object.fromEntries((s || []).map(x => [x.key, x.value]));
-    if (o.wa53_status_mute_paused === true) return; const cap = Math.max(0, Math.min(Number(o.wa53_status_mute_per_hour ?? 30), 60)); if (!cap) return;
-    const hr = (await sb('GET', `eh_events?type=eq.wa53_status_mute&ts=gte.${new Date(Date.now() - 3600e3).toISOString()}&select=id`) || []).length; if (hr >= cap) return;
-    const done = new Set((await sb('GET', 'kv53?key=like.stmute:*&select=key') || []).map(x => x.key.slice(7)));
-    const cs = (await sb('GET', 'wa_contacts?line=eq.53&select=phone&order=last_seen.desc.nullslast&limit=2000') || []).map(x => String(x.phone).replace(/\D/g, '')).filter(p => p.length >= 8 && !/97342101$/.test(p) && !done.has(p));
-    const p = cs[0]; if (!p) return;
-    let r, err = null; try { r = await ctx.statusMute(p); } catch (e) { err = String(e.message || e).slice(0, 160); }
-    await sb('POST', 'kv53?on_conflict=key', { key: 'stmute:' + p, value: JSON.stringify({ at: Date.now(), err }), expires_at: new Date(Date.now() + 3650 * 864e5).toISOString() }, 'resolution=merge-duplicates,return=minimal');
-    event('wa53_status_mute', { p4: p.slice(-4), ok: !err, error: err, jids: r ? r.jids.length : 0, left: cs.length - 1 }); await flush();
-  } catch (e) { console.error('[stmute]', String(e.message).slice(0, 120)); } finally { smBusy = false; }
-}
 setInterval(() => mirrorTick().catch(() => {}), 60000).unref();
-setInterval(() => muteTick().catch(() => {}), Math.round(3600e3 / 30)).unref();
