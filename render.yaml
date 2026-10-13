@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: eh-wa53-standby
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: INSTANCE_NAME
+        value: render
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: BRIDGE_KEY
+        sync: false

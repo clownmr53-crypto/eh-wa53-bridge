@@ -1,21 +1,15 @@
-# eh-wa53-bridge
-Baileys linked-device bridge for Electronic HOUSE WhatsApp 53 (+229 53 63 20 00).
+# eh-wa53 bridge — standby image (v7 + in-process bot + always-reply), 2026-10-13
+Same code as the box (`/workspace/eh_mission/wa53_bridge_v7`). Only the holder of Supabase `wa53_bridge_lock` connects to WhatsApp.
 
-- Sends: polls Supabase `wa53_outbox` every 2 s (rows inserted by the n8n 59-clone in bridge mode), human delay 0.8–3 s, marks `sent`/`failed`.
-- Session: Supabase `wa53_bridge_auth` (restored at each connect, mirrored on every creds update). No local state needed.
-- Leader election: Supabase `wa53_bridge_lock` via RPC `wa53_lock_acquire(holder, 45)`. Heartbeat every 10 s; a stale lock (>45 s) is taken over;
-  an instance that loses the lock (or can't heartbeat for 30 s) closes its WhatsApp socket. Only the holder connects -> no double session.
-  SIGTERM releases the lock so another instance takes over within ~10 s.
-- HTTP: `GET /health` -> `{instance, leader, lock_holder, status, me}`. Optional `POST /send` and `/qr` need BRIDGE_KEY.
+## Safety model (one session, two hosts)
+- Lock RPC `wa53_lock_acquire(holder, 45)`: heartbeat every 10 s; a lock is taken over only when stale > 45 s or released.
+- The holder self-demotes (closes its socket, stops writing auth) if it cannot heartbeat for 30 s -> it is gone before anyone can take over.
+- Auth: every key/creds write is mirrored immediately (serialized, coalesced) to `wa53_bridge_auth`; SIGTERM flushes then releases.
+- A host with an empty disk (Render) always restores auth from Supabase. A host that has a local `.auth` but sees a NEWER Supabase row written by
+  someone else (auth_sync.json) backs up its `.auth` and restores from Supabase before connecting (box coming back after a Render takeover).
+- Known limit: if the leader is network-partitioned it cannot flush its last keys; the taker restores the last mirrored state (normally identical, since every write is mirrored at once).
 
-## Env
-Required: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, INSTANCE_NAME (e.g. render / wispbyte / box).
-Optional: BRIDGE_KEY, PORT (Render sets it; Wispbyte uses SERVER_PORT automatically), LOG_LEVEL.
-A `.env` file next to index.js is also read (real env vars take precedence). Never commit it.
-
-## Render (free web service)
-New Web Service -> this repo -> Runtime Docker (Dockerfile) -> Free -> env vars above -> Health check path `/health`.
-Keep awake: add `https://<service>.onrender.com/health` to eh-relay RENDER_PING_URLS.
-
-## Wispbyte (Pterodactyl, Node.js egg, nodejs_22 image)
-Upload the zip contents to /home/container (index.js, package.json, .env from .env.example filled in), start: the egg runs npm install then node index.js.
+## Render (free web service, Docker)
+New Web Service -> private repo `clownmr53-crypto/eh-wa53-bridge` -> Docker -> Free -> env: INSTANCE_NAME=render, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, BRIDGE_KEY -> health `/health`.
+Free instances sleep after 15 min without HTTP: add `https://<service>.onrender.com/health` to eh-relay `RENDER_PING_URLS` (pinged every 5 min) or the standby cannot take over.
+Do NOT set PAIR_PHONE. Never run two instances with the same INSTANCE_NAME.

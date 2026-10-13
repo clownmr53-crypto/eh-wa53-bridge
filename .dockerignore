@@ -1,4 +1,5 @@
-node_modules
-.git
 .env
 .auth
+node_modules
+*.log
+.git

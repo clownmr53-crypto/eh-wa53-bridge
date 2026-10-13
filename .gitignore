@@ -1,6 +1,6 @@
-node_modules
-.auth
 .env
-qr.png
-qr.meta.json
+.auth/
+auth_sync.json
+automated_texts.json
+node_modules/
 *.log
