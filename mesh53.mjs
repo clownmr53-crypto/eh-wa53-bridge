@@ -83,6 +83,7 @@ async function exec(c) {
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
     case 'status': return { ok: true, state: getState() };
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
+    case 'channel_post': return postChannel({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };
     default: return { ok: false, error: 'action inconnue pour wa53: ' + c.action };
   }
@@ -162,7 +163,54 @@ async function statusTick() {
     const r = await postStatus({ slot: `${st.n}-${i}` }); if (!r.skipped) console.error('[mesh] status', JSON.stringify(r).slice(0, 200));
   } catch (e) { console.error('[mesh] status', String(e.message).slice(0, 120)); } finally { stBusy = false; }
 }
-export function start(o) { setInterval(statusTick, 60000).unref(); getState = o.getState; ctx = o; beat(); setInterval(beat, 30000).unref(); setInterval(pollCommands, 10000).unref(); }
+// ---- WhatsApp Channel bot (V4 2026-10-13): channel « Electronic HOUSE » created once (claim eh_events dedup), 2-3 posts/day, same image logic as statuses ----
+// settings: wa53_channel {jid, invite, link} (written here), wa53_channel_per_day (default 3, max 3), wa53_channel_paused. Events: wa53_channel_created / wa53_channel_post / wa53_channel_error.
+let chBusy = false; const CH_SLOTS = { 1: [14 * 60], 2: [11 * 60, 18 * 60 + 30], 3: [10 * 60, 14 * 60 + 30, 19 * 60] };
+async function chSettings() { try { const r = await sb('GET', 'eh_settings?key=in.(wa53_channel,wa53_channel_per_day,wa53_channel_paused)&select=key,value'); const o = Object.fromEntries((r || []).map(x => [x.key, x.value])); return { ch: o.wa53_channel || null, n: Math.max(0, Math.min(Number(o.wa53_channel_per_day ?? 3), 3)), paused: o.wa53_channel_paused === true }; } catch { return null; } }
+async function ensureChannel(st) {
+  if (st.ch && st.ch.jid) return st.ch;
+  if (!ctx.channelCreate) return null;
+  try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_create:v1', data: {} }, 'return=minimal'); } catch { return null; } // created (or being created) by an instance already
+  try {
+    const r = await ctx.channelCreate('Electronic HOUSE', 'Nouveautés, téléphones, logiciels et abonnements Electronic HOUSE. Écrivez-nous sur WhatsApp : wa.me/2290153632000');
+    const ch = { jid: r.id, invite: r.invite || null, link: r.invite ? 'https://whatsapp.com/channel/' + r.invite : null, created_at: new Date().toISOString() };
+    await sb('POST', 'eh_settings?on_conflict=key', { key: 'wa53_channel', value: ch, updated_by: WHO, updated_at: new Date().toISOString() }, 'resolution=merge-duplicates,return=minimal');
+    event('wa53_channel_created', ch); await flush(); return ch;
+  } catch (e) { event('wa53_channel_error', { step: 'create', error: String(e.message || e).slice(0, 200) }); await flush(); return null; }
+}
+async function postChannel({ manual = false, slot, product } = {}) {
+  if (!ctx || !ctx.channelSend || !getState().leader || getState().status !== 'open') return { ok: false, error: 'pas leader / pas connecté' };
+  const st = await chSettings(); if (!st) return { ok: false, error: 'settings' }; const ch = await ensureChannel(st); if (!ch) return { ok: false, error: 'chaîne absente' };
+  const day = new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
+  try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: `ch53:${day}:${slot}`, data: { manual } }, 'return=minimal'); } catch { return { ok: false, skipped: 'déjà posté (slot ' + slot + ')' }; }
+  const todayN = (await sb('GET', `eh_events?type=eq.wa53_channel_post&ts=gte.${day}T00:00:00%2B01:00&select=id`).catch(() => [])).length;
+  let buf, cap, id, name, src;
+  const fbr = await fbImage(todayN === 0 && !product ? 'dig:ia-multi' : null).catch(e => ({ error: String(e.message || e) })); // Google One Gemini first each day
+  if (fbr && fbr.buf) { buf = fbr.buf; id = fbr.id; name = fbr.label; src = fbr.source; cap = String(fbr.caption || '').replace(/\s+\n/g, '\n').slice(0, 650); }
+  else {
+    const all = (await stProducts()).filter(x => !/logo|electronic[-_ ]?house|\/eh[-_.]/i.test(x.img)); if (!all.length) return { ok: false, error: 'aucun produit avec vraie image' };
+    let recent = []; try { recent = (await sb('GET', `eh_events?type=eq.wa53_channel_post&ts=gte.${new Date(Date.now() - 4 * 864e5).toISOString()}&select=data`)).map(x => x.data && x.data.id); } catch {}
+    const gem = all.filter(x => /google one|gemini/i.test(x.name)); let pick = product ? all.find(x => x.name.toLowerCase().includes(String(product).toLowerCase())) : null;
+    if (!pick && todayN === 0 && gem.length) pick = gem[Math.floor(Math.random() * gem.length)];
+    if (!pick) { const pool = all.filter(x => !recent.includes(x.id)); pick = (pool.length ? pool : all)[Math.floor(Math.random() * (pool.length || all.length))]; }
+    const img = await fetch(pick.img, { signal: AbortSignal.timeout(20000) }); if (!img.ok) return { ok: false, error: 'image ' + img.status };
+    buf = Buffer.from(await img.arrayBuffer()); id = pick.id; name = pick.name; src = 'catalog';
+    cap = await aiText(await ctx.secrets(), `Écris un court message pour la chaîne WhatsApp d'Electronic HOUSE (2 à 3 phrases, 2 emojis max) présentant : « ${pick.name} ». Infos : ${String(pick.desc || '').replace(/\d[\d\s.,]*\s*(f\b|fcfa|cfa|xof|francs?)/gi, '').replace(/cotonou[^.]*\.?/gi, '').slice(0, 300)}. Aucun prix, aucune ville.`);
+  }
+  if (!cap || BANNED.test(cap) || PRICE.test(cap)) cap = `✨ ${name} disponible chez Electronic HOUSE.`;
+  cap = `${cap.trim()}\n\n💬 Commandez sur WhatsApp : wa.me/2290153632000`;
+  try { const out = await ctx.channelSend(ch.jid, buf, cap); event('wa53_channel_post', { id, name, image_source: src, caption: cap.slice(0, 300), wid: out.id, manual, slot, channel: ch.link }); await flush(); return { ok: !!out.id, product: name, image_source: src, caption: cap, wid: out.id, channel: ch.link }; }
+  catch (e) { event('wa53_channel_error', { step: 'post', slot, error: String(e.message || e).slice(0, 200) }); await flush(); return { ok: false, error: String(e.message || e) }; }
+}
+async function channelTick() {
+  if (chBusy || !getState().leader || getState().status !== 'open') return; chBusy = true;
+  try { const st = await chSettings(); if (!st || st.paused) return; if (!st.ch) { await ensureChannel(st); return; } if (!st.n) return;
+    const d = new Date(Date.now() + 3600e3); const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+    const i = CH_SLOTS[st.n].findIndex(t => min >= t && min < t + 20); if (i < 0) return;
+    const r = await postChannel({ slot: `${st.n}-${i}` }); if (!r.skipped) console.error('[mesh] channel', JSON.stringify(r).slice(0, 200));
+  } catch (e) { console.error('[mesh] channel', String(e.message).slice(0, 120)); } finally { chBusy = false; }
+}
+export function start(o) { setInterval(statusTick, 60000).unref(); setInterval(channelTick, 60000).unref(); getState = o.getState; ctx = o; beat(); setInterval(beat, 30000).unref(); setInterval(pollCommands, 10000).unref(); }
 
 // Peer keep-alive: ping the other Render bridge /health every 5 min (PEER_URLS, comma-separated)
 const PEERS = (process.env.PEER_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
