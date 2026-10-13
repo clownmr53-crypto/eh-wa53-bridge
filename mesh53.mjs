@@ -221,3 +221,18 @@ export function start(o) { setInterval(statusTick, 60000).unref(); setInterval(c
 const PEERS = (process.env.PEER_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
 async function pingPeers() { for (const u of PEERS) { try { const r = await fetch(u, { signal: AbortSignal.timeout(25000) }); console.log("[peer]", u, r.status); } catch (x) { console.log("[peer]", u, String(x)); } } }
 if (PEERS.length) { setTimeout(pingPeers, 20000).unref(); setInterval(pingPeers, 5 * 60e3).unref(); }
+
+// ONE-TIME 2026-10-13: delete duplicate empty channel (owner approved). Leader only, claim-once, hard-checked target. Remove after run.
+const DUP_CH = '120363414491230419@newsletter', LIVE_CH = '120363430925551249@newsletter'; let dupDone = false;
+async function dupDeleteTick() {
+  if (dupDone || !ctx || !ctx.channelDeleteOnce || !getState().leader || getState().status !== 'open') return; dupDone = true;
+  try {
+    const before = await ctx.channelList(); const t = before.find(n => n.jid === DUP_CH);
+    if (!t || DUP_CH === LIVE_CH || !/owner/i.test(t.role || '') || !/electronic house/i.test(t.name || '')) { event('wa53_channel_dup_delete', { skipped: 'target absent or not owned', before }); await flush(); return; }
+    try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_dup_delete:v1', data: {} }, 'return=minimal'); } catch { return; }
+    let err = null; try { await ctx.channelDeleteOnce(DUP_CH); } catch (e) { err = String(e.message || e).slice(0, 200); }
+    const after = await ctx.channelList().catch(e => 'list error ' + e.message);
+    event('wa53_channel_dup_delete', { target: DUP_CH, error: err, before: before.map(n => n.jid), after: Array.isArray(after) ? after.map(n => ({ jid: n.jid, name: n.name, role: n.role })) : after }); await flush();
+  } catch (e) { dupDone = false; console.error('[dup]', e.message); }
+}
+setInterval(() => dupDeleteTick(), 30000).unref();

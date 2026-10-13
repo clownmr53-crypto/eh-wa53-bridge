@@ -611,6 +611,7 @@ mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last
     const ch = (r.content || []).find(x => x.tag === 'result'); const d = ch && ch.content ? JSON.parse(ch.content.toString()) : null; if (d && d.errors) throw new Error(JSON.stringify(d.errors).slice(0, 200));
     const list = (d && d.data && d.data.xwa2_newsletter_subscribed) || [];
     return list.map(n => ({ jid: n.id, name: n.thread_metadata && n.thread_metadata.name && n.thread_metadata.name.text, invite: n.thread_metadata && n.thread_metadata.invite, role: n.viewer_metadata && n.viewer_metadata.role, created: n.thread_metadata && Number(n.thread_metadata.creation_time) })); },
+  channelDeleteOnce: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); if (jid !== '120363414491230419@newsletter' || jid === '120363430925551249@newsletter') throw new Error('target refused'); return sock.newsletterDelete(jid); }, // ONE-TIME (remove after run)
   channelMeta: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); return sock.newsletterMetadata('jid', jid); },
   channelSend: async (jid, buf, caption) => { if (!sock || status !== 'open') throw new Error('not connected'); const out = await sock.sendMessage(jid, { image: buf, caption }); return { id: out?.key?.id || null }; },
   sendStatus: async (buf, caption) => {
