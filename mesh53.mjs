@@ -85,6 +85,7 @@ async function exec(c) {
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'channel_list': return ctx.channelList ? { ok: true, list: await ctx.channelList() } : { ok: false };
     case 'status_mute_one': { if (!ctx.statusMute) return { ok: false }; const r = await ctx.statusMute(String(p.phone || '')); event('wa53_status_mute', { p4: String(p.phone).slice(-4), ok: true, manual: true, jids: r.jids.length }); await flush(); return { ok: true, ...r }; }
+    case 'revoke_own': return ctx.revokeOwn(String(p.jid || ''), String(p.id || ''));
     case 'fbmirror_now': return mirrorTick({ test: !!p.test });
     case 'channel_post': return postChannel({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };

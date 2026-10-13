@@ -616,6 +616,7 @@ mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last
     try { const lid = await sock.signalRepository?.lidMapping?.getLIDForPN?.(pn); if (lid) jids.push(lid); } catch {}
     for (const j of jids) await sock.appPatch({ syncAction: { userStatusMuteAction: { muted: true } }, index: ['userStatusMute', j], type: 'regular_high', apiVersion: 7, operation: 0 });
     return { jids }; },
+  revokeOwn: async (jid, id) => { if (!sock || status !== 'open') throw new Error('not connected'); if (!/^(status@broadcast|\d+@newsletter)$/.test(jid)) throw new Error('jid refused'); await sock.sendMessage(jid, { delete: { remoteJid: jid, fromMe: true, id } }); return { ok: true }; }, // delete our own test status/channel post
   channelMeta: async (jid) => { if (!sock || status !== 'open') throw new Error('not connected'); return sock.newsletterMetadata('jid', jid); },
   channelSend: async (jid, buf, caption, kind = 'image') => { if (!sock || status !== 'open') throw new Error('not connected'); const out = await sock.sendMessage(jid, kind === 'text' ? { text: caption } : kind === 'video' ? { video: buf, caption } : { image: buf, caption }); return { id: out?.key?.id || null }; },
   sendStatus: async (buf, caption, kind = 'image') => {
