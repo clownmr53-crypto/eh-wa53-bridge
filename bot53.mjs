@@ -66,7 +66,7 @@ import * as mesh from './mesh53.mjs';
 export async function runJob(job, opts = {}) {
   const sec = await loadSecrets();
   const S = Object.assign({}, sec, { PHONE_ID: '1364570600073371', SEND_VIA: 'inproc', TEST_GUARD: !!opts.test, TEST_ALLOW: opts.test ? [] : ['22997342101', '2290197342101'] });
-  const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced; S.AI_REST = ai.rest; // Système V2: shared provider health
+  const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced || (process.env.AI_FIRST && !(ai.rest[process.env.AI_FIRST] > Date.now()) ? process.env.AI_FIRST : null); // AI_FIRST=groq: fastest first (<1 s) unless resting S.AI_REST = ai.rest; // Système V2: shared provider health
   const ctx = vm.createContext({ __AIH: mesh.aiReport, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
   script.runInContext(ctx);
   ctx.__RUNREF.t0 = Date.now();

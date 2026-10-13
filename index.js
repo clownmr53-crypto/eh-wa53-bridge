@@ -23,7 +23,7 @@ try { for (const l of fs.readFileSync(path.join(path.dirname(fileURLToPath(impor
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || process.env.SERVER_PORT || 8787);
 const INSTANCE = process.env.INSTANCE_NAME || os.hostname();
-const LOCK_HB_MS = 10_000, LOCK_STALE_S = 45, LOCK_LOSE_MS = 30_000; // heartbeat 10s, takeover if stale >45s, self-demote if no successful heartbeat for 30s
+const LOCK_HB_MS = 10_000, LOCK_STALE_S = Number(process.env.LOCK_STALE_S || 45), LOCK_LOSE_MS = 30_000; // heartbeat 10s, takeover if stale >45s, self-demote if no successful heartbeat for 30s
 const BRIDGE_KEY = process.env.BRIDGE_KEY || '';
 const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -57,6 +57,7 @@ setInterval(cleanSeen, 6e4);
 
 async function sb(method, path, body, prefer) {
   const r = await fetch(SB_URL + '/rest/v1/' + path, {
+    signal: AbortSignal.timeout(8000), // 2026-10-13: a hung Supabase call used to freeze the lock heartbeat -> silent lock loss
     method, headers: {
       apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json',
       ...(prefer ? { Prefer: prefer } : {})
@@ -146,6 +147,20 @@ let flushAuth = async () => {};
 const PAIR_PHONE = (process.env.PAIR_PHONE || '').replace(/\D/g, '');
 const EXT_QR = '/workspace/eh_mission/wa53_qr.png', EXT_CODE = '/workspace/eh_mission/wa53_paircode.txt';
 let sock = null, qrDataUrl = null, qrAt = 0, status = 'starting', me = null;
+let pairCode = null, pairPhone = '';
+async function pubQr(extra = {}) { // V3: live QR / pairing code for the dashboard (kv53 key wa53:qr, short TTL)
+  try { await sb('POST', 'kv53?on_conflict=key', { key: 'wa53:qr', value: JSON.stringify({ instance: INSTANCE, status, qr: qrDataUrl && Date.now() - qrAt < QR_TTL_MS ? qrDataUrl : null, qr_at: qrAt, code: pairCode, phone: pairPhone ? pairPhone.slice(0, 5) + '…' : null, me: me?.id || null, at: Date.now(), ...extra }), expires_at: new Date(Date.now() + 600e3).toISOString() }, 'resolution=merge-duplicates,return=minimal'); } catch (e) { log.warn({ err: String(e?.message || e) }, 'pubQr'); }
+}
+async function repair(mode, phone, force) { // V3: dashboard "Reconnecter le 53"
+  if (!leader) return { ok: false, error: 'cette instance ne tient pas le verrou' };
+  if (status === 'open' && !force) return { ok: false, error: 'le 53 est connecté : re-liaison refusée (force=true pour forcer)' };
+  pairPhone = mode === 'code' ? String(phone || '').replace(/\D/g, '') : ''; pairCode = null;
+  if (mode === 'code' && sock && !sock.authState?.creds?.registered) { try { pairCode = await sock.requestPairingCode(pairPhone); await pubQr(); return { ok: true, code: pairCode }; } catch (e) { log.warn({ err: String(e?.message || e) }, 'pair code on live sock failed'); } }
+  const s = sock; sock = null; try { s && s.ev.removeAllListeners(); s && s.end(undefined); } catch {}
+  try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); await sb('DELETE', 'wa53_bridge_auth?id=eq.default'); } catch {}
+  status = 'starting'; await pubQr({ repair: mode }); setTimeout(() => startSock().catch(e => log.error(e, 'startSock')), 500);
+  return { ok: true, note: 'nouvelle liaison lancée ; QR / code visibles dans le tableau de bord' };
+}
 const QR_TTL_MS = 55_000; // Meta/WhatsApp QR ~60s; refresh on new qr event
 
 function authOk(req) {
@@ -198,28 +213,28 @@ async function startSock() {
       qrAt = Date.now();
       await QRCode.toFile(QR_PNG, qr, { width: 512, margin: 2 });
       try { fs.copyFileSync(QR_PNG, EXT_QR + '.tmp'); fs.renameSync(EXT_QR + '.tmp', EXT_QR); } catch {}
-      if (PAIR_PHONE && !my._pairReq && !state.creds.registered) {
+      if ((PAIR_PHONE || pairPhone) && !my._pairReq && !state.creds.registered) {
         my._pairReq = true;
         try {
-          const code = await my.requestPairingCode(PAIR_PHONE);
+          const code = await my.requestPairingCode(pairPhone || PAIR_PHONE); pairCode = code;
           fs.writeFileSync(EXT_CODE, `${code}\nphone=${PAIR_PHONE}\ngenerated=${new Date().toISOString()}\n`);
           log.info({ file: EXT_CODE }, 'pairing code ready');
         } catch (e) { log.warn({ err: String(e?.message || e) }, 'pairing code failed'); }
       }
       fs.writeFileSync(QR_META, JSON.stringify({ at: qrAt, expiresAt: qrAt + QR_TTL_MS, path: QR_PNG }));
-      status = 'qr';
+      status = 'qr'; pubQr();
       log.info({ png: QR_PNG, ttl_s: QR_TTL_MS / 1000 }, 'QR ready — scan with WhatsApp Business > Appareils connectés');
     }
     if (connection === 'open') {
       status = 'open'; lastOpenAt = Date.now(); me = my.user; qrDataUrl = null;
       try { fs.unlinkSync(QR_PNG); fs.unlinkSync(EXT_QR); } catch {}
       try { fs.writeFileSync(EXT_CODE, `LINKED ${me?.id} at ${new Date().toISOString()}\n`); } catch {}
-      flushAuth().catch(() => {});
+      flushAuth().catch(() => {}); pairCode = null; pairPhone = ''; pubQr();
       log.info({ me: me?.id }, 'linked');
     }
     if (connection === 'close') {
       const code = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : 0;
-      status = 'closed:' + code;
+      status = 'closed:' + code; pubQr();
       const restart = code !== DisconnectReason.loggedOut;
       log.warn({ code, restart }, 'connection closed');
       sock = null;
@@ -567,7 +582,9 @@ async function stopSock(why) {
   const s = sock; sock = null; status = 'standby'; me = null;
   if (s) { try { s.ev.removeAllListeners(); s.end(undefined); } catch {} log.warn({ why }, 'disconnected from WhatsApp (lost lock)'); }
 }
+let lockBusy = false;
 async function lockTick() {
+  if (lockBusy) return; lockBusy = true; // never overlap ticks
   try {
     const r = await sb('POST', 'rpc/wa53_lock_acquire', { p_holder: INSTANCE, p_stale_s: LOCK_STALE_S });
     holder = r?.holder || null;
@@ -580,13 +597,13 @@ async function lockTick() {
   } catch (e) {
     log.warn({ err: String(e?.message || e) }, 'lock heartbeat failed');
     if (leader && Date.now() - lastHbOk > LOCK_LOSE_MS) await stopSock('heartbeat failing');
-  }
+  } finally { lockBusy = false; }
 }
 // V2: KEEP_LOCK_ON_EXIT=1 (box) -> a clean restart keeps the lock, so the Render standby cannot grab it in the 5 s restart gap; it takes over only if the lock is stale > 45 s
 async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); if (process.env.KEEP_LOCK_ON_EXIT !== '1') await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
-mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k) });
+mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair });
 
 // ---- heartbeat (Supabase kv53 'wa53:hb', read by eh-relay for the down-alert) + in-process watchdog (2026-10-13) ----
 let notOpenSince = null, probeFails = 0;

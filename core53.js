@@ -3486,6 +3486,11 @@ async function loadCatalog(env, fresh = false) {
     data = JSON.parse(await env.EH_KV.get("cfg:catalog") || "null");
   } catch {
   }
+  try { // V3 2026-10-13: merge eh_catalog_extra (published by eh-relay to cfg:catalog_extra), read-only, sheet untouched
+    const x = data && Array.isArray(data.items) ? JSON.parse(await env.EH_KV.get("cfg:catalog_extra") || "null") : null;
+    if (x && Array.isArray(x.items) && x.items.length) { const have = new Set(data.items.map((i) => String(i && i.name || "").toLowerCase())); data = { ...data, items: [...data.items, ...x.items.filter((i) => i && i.name && !have.has(String(i.name).toLowerCase())).slice(0, 200)] }; }
+  } catch {
+  }
   CATALOG_CACHE = { at: Date.now(), data };
   return data;
 }
@@ -8643,8 +8648,9 @@ function gcCleanName(n) {
 __name(gcCleanName, "gcCleanName");
 function gcDisplay(name, line, wa) {
   const lbl = Number(line) === 2 ? "53" : "59";
-  const n = gcCleanName(name);
-  return n ? `${n} (EH ${lbl})` : `Client EH ${lbl} \u2026${String(wa).slice(-4)}`;
+  const n = gcCleanName(String(name || "").replace(/\(?\s*\bEH\s*[-_]?\s*(53|59)\b\s*\)?/gi, " "));
+  const num = "+" + String(wa).replace(/\D/g, "").replace(/^(\d{3})(\d+)$/, (m, a, b) => a + " " + (b.match(/.{1,2}/g) || []).join(" "));
+  return `${n || num} EH ${lbl}`; // 2026-10-13: single suffix rule (was "<n> (EH x)")
 }
 __name(gcDisplay, "gcDisplay");
 function gcNameFromHist(hist) {

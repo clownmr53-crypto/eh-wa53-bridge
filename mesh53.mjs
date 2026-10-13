@@ -82,6 +82,7 @@ async function exec(c) {
     }
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
     case 'status': return { ok: true, state: getState() };
+    case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };
     default: return { ok: false, error: 'action inconnue pour wa53: ' + c.action };
   }
 }
