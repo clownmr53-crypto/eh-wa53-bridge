@@ -83,6 +83,7 @@ async function exec(c) {
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
     case 'status': return { ok: true, state: getState() };
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
+    case 'channel_list': return ctx.channelList ? { ok: true, list: await ctx.channelList() } : { ok: false };
     case 'channel_post': return postChannel({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };
     default: return { ok: false, error: 'action inconnue pour wa53: ' + c.action };
@@ -169,6 +170,10 @@ let chBusy = false; const CH_SLOTS = { 1: [14 * 60], 2: [11 * 60, 18 * 60 + 30],
 async function chSettings() { try { const r = await sb('GET', 'eh_settings?key=in.(wa53_channel,wa53_channel_per_day,wa53_channel_paused)&select=key,value'); const o = Object.fromEntries((r || []).map(x => [x.key, x.value])); return { ch: o.wa53_channel || null, n: Math.max(0, Math.min(Number(o.wa53_channel_per_day ?? 3), 3)), paused: o.wa53_channel_paused === true }; } catch { return null; } }
 async function ensureChannel(st) {
   if (st.ch && st.ch.jid) return st.ch;
+  if (ctx.channelList) { try { const own = (await ctx.channelList()).filter(n => /electronic house/i.test(n.name || '') && /owner|admin/i.test(n.role || '')).sort((a, b) => (a.created || 0) - (b.created || 0));
+    if (own.length) { const o = own[0]; const ch = { jid: o.jid, invite: o.invite || null, link: o.invite ? 'https://whatsapp.com/channel/' + o.invite : null, adopted: true, others: own.slice(1).map(x => x.jid), at: new Date().toISOString() };
+      await sb('POST', 'eh_settings?on_conflict=key', { key: 'wa53_channel', value: ch, updated_by: WHO, updated_at: new Date().toISOString() }, 'resolution=merge-duplicates,return=minimal'); event('wa53_channel_adopted', { ...ch, all: own }); await flush(); return ch; } }
+    catch (e) { event('wa53_channel_error', { step: 'list', error: String(e.message || e).slice(0, 200) }); await flush(); return null; } } // never create if we cannot check
   if (!ctx.channelCreate) return null;
   try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_channel_claim', line: '53', dedup_key: 'wa53_channel_create:v2', data: {} }, 'return=minimal'); } catch { return null; } // created (or being created) by an instance already
   try {
