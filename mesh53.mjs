@@ -82,6 +82,7 @@ async function exec(c) {
     }
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
     case 'status': return { ok: true, state: getState() };
+    case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });
     case 'repair': return ctx.repair ? ctx.repair(p.mode === 'code' ? 'code' : 'qr', p.phone, !!p.force) : { ok: false, error: 'non supporté' };
     default: return { ok: false, error: 'action inconnue pour wa53: ' + c.action };
   }
@@ -99,4 +100,42 @@ async function pollCommands() {
     }
   } catch (e) { console.error('[mesh] cmds', String(e.message).slice(0, 100)); } finally { cmdBusy = false; }
 }
-export function start(o) { getState = o.getState; ctx = o; beat(); setInterval(beat, 30000).unref(); setInterval(pollCommands, 10000).unref(); }
+// ---- WhatsApp Status bot (2026-10-13): product image + short AI caption, Google One Gemini first, no price, never the city; leader only ----
+let stBusy = false; const ST_FIRST = 8 * 60, ST_LAST = 21 * 60;
+async function stSettings() { try { const r = await sb('GET', 'eh_settings?key=in.(wa53_status_per_day,wa53_status_paused)&select=key,value'); const o = Object.fromEntries((r || []).map(x => [x.key, x.value])); return { n: Math.max(0, Math.min(Number(o.wa53_status_per_day ?? 4), 12)), paused: o.wa53_status_paused === true }; } catch { return { n: 4, paused: false }; } }
+async function stProducts() {
+  const r = await fetch('https://electronichouse.pages.dev/feeds/google.tsv', { signal: AbortSignal.timeout(15000) }); const L = (await r.text()).split('\n').filter(Boolean); const h = L.shift().split('\t'); const ix = n => h.indexOf(n);
+  const items = L.map(l => { const c = l.split('\t'); return { id: c[ix('id')], name: c[ix('title')], desc: c[ix('description')], img: c[ix('image_link')], type: c[ix('product_type')] || '' }; }).filter(x => x.img && /^https:/.test(x.img));
+  let extra = []; try { extra = (await sb('GET', 'eh_catalog_extra?active=eq.true&photo=like.http*&select=name,description,photo,category')).map(x => ({ id: 'x:' + x.name, name: x.name, desc: x.description, img: x.photo, type: x.category })); } catch {}
+  return [...items, ...extra];
+}
+async function postStatus({ manual = false, slot, product } = {}) {
+  if (!ctx || !ctx.sendStatus || !getState().leader || getState().status !== 'open') return { ok: false, error: 'pas leader / pas connecté' };
+  const day = new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
+  try { await sb('POST', 'eh_events', { source: WHO, type: 'wa53_status_claim', line: '53', dedup_key: `st53:${day}:${slot}`, data: { manual } }, 'return=minimal'); } catch { return { ok: false, skipped: 'déjà posté (slot ' + slot + ')' }; }
+  const all = await stProducts(); if (!all.length) return { ok: false, error: 'aucun produit avec image' };
+  let recent = []; try { recent = (await sb('GET', `eh_events?type=eq.wa53_status&ts=gte.${new Date(Date.now() - 3 * 864e5).toISOString()}&select=data`)).map(x => x.data && x.data.id); } catch {}
+  const gem = all.filter(x => /google one|gemini/i.test(x.name));
+  const todayN = (await sb('GET', `eh_events?type=eq.wa53_status&ts=gte.${day}T00:00:00%2B01:00&select=id`).catch(() => [])).length;
+  let pick = product ? all.find(x => x.name.toLowerCase().includes(String(product).toLowerCase())) : null;
+  if (!pick && todayN === 0 && gem.length) pick = gem[Math.floor(Math.random() * gem.length)]; // Google One Gemini first each day
+  if (!pick) { const pool = all.filter(x => !recent.includes(x.id)); pick = (pool.length ? pool : all)[Math.floor(Math.random() * (pool.length || all.length))]; }
+  const img = await fetch(pick.img, { signal: AbortSignal.timeout(20000) }); if (!img.ok) return { ok: false, error: 'image ' + img.status };
+  const buf = Buffer.from(await img.arrayBuffer());
+  let cap = await aiText(await ctx.secrets(), `Écris une légende de statut WhatsApp (1 à 2 phrases, 2 emojis max) pour ce produit d'Electronic HOUSE : « ${pick.name} ». Infos : ${String(pick.desc || '').replace(/\d[\d\s.,]*\s*(f\b|fcfa|cfa|xof|francs?)/gi, '').replace(/cotonou[^.]*\.?/gi, '').slice(0, 300)}. Termine par une invitation à écrire sur WhatsApp. Aucun prix, aucune ville.`);
+  if (!cap) cap = `✨ ${pick.name} disponible chez Electronic HOUSE. Écrivez-nous ici pour en savoir plus !`;
+  if (BANNED.test(cap) || PRICE.test(cap)) cap = `✨ ${pick.name} disponible chez Electronic HOUSE. Écrivez-nous ici pour en savoir plus !`;
+  const out = await ctx.sendStatus(buf, cap);
+  event('wa53_status', { id: pick.id, name: pick.name, caption: cap.slice(0, 300), recipients: out.n, wid: out.id, manual, slot }); await flush();
+  return { ok: !!out.id, product: pick.name, caption: cap, recipients: out.n, wid: out.id };
+}
+async function statusTick() {
+  if (stBusy || !getState().leader || getState().status !== 'open') return; stBusy = true;
+  try { const st = await stSettings(); if (st.paused || !st.n) return;
+    const d = new Date(Date.now() + 3600e3); const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+    const slots = st.n === 1 ? [Math.round((ST_FIRST + ST_LAST) / 2)] : [...Array(st.n)].map((_, i) => Math.round(ST_FIRST + i * (ST_LAST - ST_FIRST) / (st.n - 1)));
+    const i = slots.findIndex(t => min >= t && min < t + 20); if (i < 0) return;
+    const r = await postStatus({ slot: `${st.n}-${i}` }); if (!r.skipped) console.error('[mesh] status', JSON.stringify(r).slice(0, 200));
+  } catch (e) { console.error('[mesh] status', String(e.message).slice(0, 120)); } finally { stBusy = false; }
+}
+export function start(o) { setInterval(statusTick, 60000).unref(); getState = o.getState; ctx = o; beat(); setInterval(beat, 30000).unref(); setInterval(pollCommands, 10000).unref(); }

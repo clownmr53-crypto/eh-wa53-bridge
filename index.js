@@ -603,7 +603,13 @@ async function lockTick() {
 async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); if (process.env.KEEP_LOCK_ON_EXIT !== '1') await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
-mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair });
+mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair, sendStatus: async (buf, caption) => {
+  if (!sock || status !== 'open') throw new Error('not connected');
+  let list = []; try { list = (await sb('GET', 'wa_contacts?line=eq.53&select=phone&order=last_seen.desc.nullslast&limit=1000') || []).map(x => String(x.phone).replace(/\D/g, '')).filter(p => p.length >= 8).map(p => p + '@s.whatsapp.net'); } catch {}
+  if (me?.id) list.push(me.id.replace(/:\d+@/, '@'));
+  const out = await sock.sendMessage('status@broadcast', { image: buf, caption }, { statusJidList: [...new Set(list)], broadcast: true });
+  return { id: out?.key?.id || null, n: list.length };
+} });
 
 // ---- heartbeat (Supabase kv53 'wa53:hb', read by eh-relay for the down-alert) + in-process watchdog (2026-10-13) ----
 let notOpenSince = null, probeFails = 0;
