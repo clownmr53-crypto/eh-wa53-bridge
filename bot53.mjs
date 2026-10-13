@@ -31,6 +31,7 @@ async function kvHTTP(o) {
   if (m === 'GET') { const k = (q.get('key') || ''); if (!k.startsWith('eq.') || [...q.keys()].some(x => x !== 'key' && x !== 'select')) return null; const key = k.slice(3); if (NOCACHE.test(key)) return null;
     const c = KVC.get(key); let row;
     if (c && Date.now() - c.at < (/\d{8,}/.test(key) ? KV_TTL_MS : KV_TTL_GLOBAL_MS)) row = c.row;
+    else if (!c && isPrefetchedMiss(key)) { row = null; KVC.set(key, { at: Date.now(), row }); }
     else { const r = await HTTP0({ ...o, method: 'GET', url: KVBASE() + '?key=eq.' + encodeURIComponent(key) + '&select=key,value,metadata,expires_at', encoding: 'text' }); if (r.statusCode >= 300) return r; row = JSON.parse(r.body || '[]')[0] || null; KVC.set(key, { at: Date.now(), row }); }
     const sel = (q.get('select') || 'key,value,metadata,expires_at').split(',');
     const out = row ? [Object.fromEntries(sel.map(f => [f, row[f] === undefined ? null : row[f]]))] : [];
@@ -46,6 +47,23 @@ async function kvHTTP(o) {
     KVC.set(key, { at: Date.now(), row: null }); kvQueue(key, o); return { statusCode: 204, headers: {}, body: asBody(o, '') }; }
   return null;
 }
+// ---- 2026-10-13 latency fix: ~30 sequential kv53 reads x 200 ms = 6 s per reply. One bulk read per conversation + background refresh of global keys ----
+const PREF = new Map(); // wa -> at
+function isPrefetchedMiss(key) { const m = key.match(/\d{8,}/g); if (!m) return false; return m.some(w => { const t = PREF.get(w); return t && Date.now() - t < KV_TTL_MS; }); }
+async function prefetchUser(job) {
+  let wa = null; try { const v = job.body.entry[0].changes[0].value; wa = (v.messages && v.messages[0] && v.messages[0].from) || null; } catch {}
+  wa = String(wa || '').replace(/\D/g, ''); if (wa.length < 8) return;
+  const t = PREF.get(wa); if (t && Date.now() - t < KV_TTL_MS / 2) return;
+  const r = await HTTP0({ url: KVBASE() + '?key=like.*' + wa + '*&select=key,value,metadata,expires_at&limit=200', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }, encoding: 'text', timeout: 6000 });
+  if (r.statusCode >= 300) return; const now = Date.now();
+  for (const row of JSON.parse(r.body || '[]')) if (!NOCACHE.test(row.key) && !(KVC.get(row.key) && now - KVC.get(row.key).at < 3000)) KVC.set(row.key, { at: now, row });
+  PREF.set(wa, now); if (PREF.size > 2000) PREF.clear();
+}
+setInterval(async () => { // refresh cached global keys in one query before they expire
+  const keys = [...KVC.keys()].filter(k => !/\d{8,}/.test(k) && !NOCACHE.test(k)).slice(0, 150); if (!keys.length) return;
+  try { const r = await HTTP0({ url: KVBASE() + '?key=in.(' + keys.map(k => '"' + k.replace(/"/g, '') + '"').map(encodeURIComponent).join(',') + ')&select=key,value,metadata,expires_at', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }, encoding: 'text', timeout: 10000 });
+    if (r.statusCode < 300) { const now = Date.now(), got = new Set(); for (const row of JSON.parse(r.body || '[]')) { got.add(row.key); if (!(KVC.get(row.key) && now - KVC.get(row.key).at < 3000)) KVC.set(row.key, { at: now, row }); } for (const k of keys) if (!got.has(k)) KVC.set(k, { at: now, row: null }); } } catch {}
+}, 240000).unref();
 export const MEDIA = new Map(); // id -> { buf, mime, at }: inbound Baileys media served to core53 as if it were Graph media
 function mediaHTTP(o) {
   const url = String(o.url); let m = url.match(/^https:\/\/graph\.facebook\.com\/v[\d.]+\/bridge\.([A-Za-z0-9]+)$/);
@@ -66,7 +84,9 @@ import * as mesh from './mesh53.mjs';
 export async function runJob(job, opts = {}) {
   const sec = await loadSecrets();
   const S = Object.assign({}, sec, { PHONE_ID: '1364570600073371', SEND_VIA: 'inproc', TEST_GUARD: !!opts.test, TEST_ALLOW: opts.test ? [] : ['22997342101', '2290197342101'] });
-  const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced || (process.env.AI_FIRST && !(ai.rest[process.env.AI_FIRST] > Date.now()) ? process.env.AI_FIRST : null); // AI_FIRST=groq: fastest first (<1 s) unless resting S.AI_REST = ai.rest; // Système V2: shared provider health
+  const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced || (process.env.AI_FIRST && !(ai.rest[process.env.AI_FIRST] > Date.now()) ? process.env.AI_FIRST : null); // AI_FIRST=groq: fastest first (<1 s) unless resting
+  S.AI_REST = ai.rest; // Système V2: shared provider health
+  await prefetchUser(job).catch(() => {});
   const ctx = vm.createContext({ __AIH: mesh.aiReport, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
   script.runInContext(ctx);
   ctx.__RUNREF.t0 = Date.now();
