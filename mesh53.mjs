@@ -139,3 +139,8 @@ async function statusTick() {
   } catch (e) { console.error('[mesh] status', String(e.message).slice(0, 120)); } finally { stBusy = false; }
 }
 export function start(o) { setInterval(statusTick, 60000).unref(); getState = o.getState; ctx = o; beat(); setInterval(beat, 30000).unref(); setInterval(pollCommands, 10000).unref(); }
+
+// Peer keep-alive: ping the other Render bridge /health every 5 min (PEER_URLS, comma-separated)
+const PEERS = (process.env.PEER_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
+async function pingPeers() { for (const u of PEERS) { try { const r = await fetch(u, { signal: AbortSignal.timeout(25000) }); console.log("[peer]", u, r.status); } catch (x) { console.log("[peer]", u, String(x)); } } }
+if (PEERS.length) { setTimeout(pingPeers, 20000).unref(); setInterval(pingPeers, 5 * 60e3).unref(); }
