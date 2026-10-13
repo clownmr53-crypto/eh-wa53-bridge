@@ -80,6 +80,14 @@ async function exec(c) {
       const out = await ctx.sendText(wa, text); outbound(wa, out.id, 'command:' + c.action);
       return { ok: true, wa, wid: out.id, text: text.slice(0, 300) };
     }
+    case 'send_document': {
+      const wa = String(p.wa || '').replace(/\D/g, ''); if (wa.length < 8) return { ok: false, error: 'numéro invalide' };
+      if (!c.confirmed_at) return { ok: false, error: 'confirmation requise' };
+      if (p.caption && BANNED.test(p.caption)) return { ok: false, error: 'mot interdit' };
+      if (!ctx.sendDocument) return { ok: false, error: 'non supporté' };
+      const out = await ctx.sendDocument(wa, p.url, p.filename, p.caption); outbound(wa, out.id, 'command:send_document');
+      return { ok: true, wa, wid: out.id, file: p.filename };
+    }
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
     case 'status': return { ok: true, state: getState() };
     case 'status_post': return postStatus({ manual: true, slot: 'manual-' + c.id, product: p.product });

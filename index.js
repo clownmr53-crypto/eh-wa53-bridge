@@ -476,6 +476,18 @@ async function sendText(to, text) {
   return { id: r?.key?.id, to: digits };
 }
 
+async function sendDocument(to, url, fileName, caption) {
+  if (!sock || status !== 'open') throw Object.assign(new Error('not linked'), { code: 503 });
+  const digits = String(to).replace(/\D/g, ''); if (digits.length < 8) throw Object.assign(new Error('bad to'), { code: 400 });
+  if (!/^https:\/\//.test(String(url))) throw Object.assign(new Error('bad url'), { code: 400 });
+  const res = await fetch(url, { signal: AbortSignal.timeout(30000) }); if (!res.ok) throw new Error('pdf http ' + res.status);
+  const buf = Buffer.from(await res.arrayBuffer()); if (buf.length > 5e6 || buf.slice(0, 4).toString() !== '%PDF') throw new Error('not a pdf');
+  const jid = `${digits}@s.whatsapp.net`; await humanDelay(jid, caption || 'doc');
+  const r = await sock.sendMessage(jid, { document: buf, mimetype: 'application/pdf', fileName: String(fileName || 'facture.pdf'), caption: caption ? String(caption).slice(0, 900) : undefined });
+  if (r?.key?.id) botSent.set(r.key.id, Date.now()); remember(r?.key, r?.message); markBotSent(r?.key?.id);
+  return { id: r?.key?.id, to: digits };
+}
+
 // ---- Supabase outbox poller: n8n clone (bridge mode) inserts rows into wa53_outbox; we send them here ----
 function outboxContent(kind, p) {
   const media = (k) => { const o = p[k] || {}; return o.link ? { url: o.link } : null; };
@@ -603,7 +615,7 @@ async function lockTick() {
 async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); if (process.env.KEEP_LOCK_ON_EXIT !== '1') await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
-mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair, channelCreate: async (name, desc) => { if (!sock || status !== 'open') throw new Error('not connected');
+mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, sendDocument, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair, channelCreate: async (name, desc) => { if (!sock || status !== 'open') throw new Error('not connected');
     try { await sock.query({ tag: 'iq', attrs: { to: 's.whatsapp.net', xmlns: 'tos', id: sock.generateMessageTag(), type: 'set' }, content: [{ tag: 'notice', attrs: { id: '20601218', stage: '5' }, content: [] }] }); } catch (x) { console.error('[channel] tos', String(x.message || x).slice(0, 120)); } // accept Channels terms once (required before create)
     return sock.newsletterCreate(name, desc); },
   channelList: async () => { if (!sock || status !== 'open') throw new Error('not connected'); // owned/followed channels (mex xwa2_newsletter_subscribed), read-only
