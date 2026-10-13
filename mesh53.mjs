@@ -73,7 +73,7 @@ async function exec(c) {
       const wa = String(p.wa || p.to || '').replace(/\D/g, ''); if (wa.length < 8) return { ok: false, error: 'numéro invalide' };
       if (!c.confirmed_at) return { ok: false, error: 'confirmation requise' };
       let text = p.text;
-      if (c.action === 'send_catalog') text = await aiText(await ctx.secrets(), `Écris un message pour présenter notre catalogue à ${p.name || 'ce client'} et l'inviter à le parcourir ici : https://electronichouse.pages.dev ${p.note ? '(contexte : ' + p.note + ')' : ''}. Termine par une question ouverte.`);
+      if (c.action === 'send_catalog') text = await aiText(await ctx.secrets(), `Écris un message pour présenter notre catalogue à ${p.name || 'ce client'} en citant d'abord Google One Gemini Pro (abonnement phare), puis les autres abonnements et les téléphones, et l'inviter à le parcourir ici : https://electronichouse.pages.dev ${p.note ? '(contexte : ' + p.note + ')' : ''}. Termine par une question ouverte.`);
       if (c.action === 'send_reminder' && !text) text = await aiText(await ctx.secrets(), `Écris un rappel amical de renouvellement d'abonnement (${p.product || 'abonnement'}) à ${p.name || 'ce client'}, qui a demandé à être prévenu.`);
       if (!text) return { ok: false, error: 'IA indisponible' };
       if (BANNED.test(text)) return { ok: false, error: 'mot interdit' };
