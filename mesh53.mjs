@@ -14,7 +14,7 @@ export async function claim(id, wa) {
 }
 // ---- events (batched) ----
 let buf = [];
-export function event(type, data = {}, extra = {}) { buf.push({ source: WHO, type, line: '53', ...extra, data }); if (buf.length > 200) buf.shift(); }
+export function event(type, data = {}, extra = {}) { buf.push({ source: WHO, type, line: '53', wa: extra.wa || null, msg_id: extra.msg_id || null, dedup_key: extra.dedup_key || null, data }); if (buf.length > 200) buf.shift(); }
 async function flush() { if (!buf.length) return; const b = buf; buf = []; try { await sb('POST', 'eh_events', b, 'return=minimal'); } catch (e) { console.error('[mesh] events', String(e.message).slice(0, 100)); } }
 setInterval(flush, 3000).unref();
 export const inbound = (wa, id, kind, text) => event('msg_in', { kind, len: String(text || '').length }, { wa, msg_id: id });
