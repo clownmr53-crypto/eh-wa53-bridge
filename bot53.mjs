@@ -15,6 +15,42 @@ export async function loadSecrets(force) {
   return SECRETS;
 }
 setInterval(() => loadSecrets(true).catch(() => {}), 10 * 60e3).unref();
+// ---- V8 AI registry (Supabase: runtime_secrets 'ai_keys', eh_ai_providers, eh_settings ai_route/ai_auto_route) ----
+let AI8 = null, ai8At = 0; const RR8 = {};
+async function sbGet(p) { const r = await fetch(SB_URL + '/rest/v1/' + p, { headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }, signal: AbortSignal.timeout(5000) }); if (!r.ok) throw new Error(p.split('?')[0] + ' ' + r.status); return r.json(); }
+async function loadAi8() {
+  if (AI8 && Date.now() - ai8At < 60e3) return AI8;
+  try { const [k, pr, st] = await Promise.all([sbGet('runtime_secrets?name=eq.ai_keys&select=data'), sbGet('eh_ai_providers?select=name,kind,base_url,model,enabled'), sbGet('eh_settings?key=in.(ai_route,ai_auto_route)&select=key,value')]);
+    const S = Object.fromEntries(st.map(x => [x.key, x.value])); AI8 = { keys: (k[0] && k[0].data) || {}, prov: pr, route: S.ai_route || {}, auto: S.ai_auto_route || {} }; ai8At = Date.now();
+  } catch (e) { if (!AI8) AI8 = { keys: {}, prov: [], route: {}, auto: {} }; ai8At = Date.now() - 50e3; }
+  return AI8;
+}
+const pick8 = (name, arr) => { if (!arr || !arr.length) return null; const i = (RR8[name] = (RR8[name] || 0) + 1) % arr.length; return arr[i]; };
+const CORE8 = ['groq', 'gemini', 'openrouter', 'mistral', 'huggingface', 'cohere', 'workers_ai'];
+async function xai(x, msgs, { max_tokens = 320, temperature = 0.6, timeoutMs = 8000 } = {}) {
+  const key = pick8('x:' + x.name, x.keys); const base = String(x.base_url || '').replace(/\/$/, ''); const sig = AbortSignal.timeout(timeoutMs); let r, j, t;
+  try {
+    if (x.kind === 'anthropic') { r = await fetch(base + '/messages', { method: 'POST', signal: sig, headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: x.model, system: msgs.filter(m => m.role === 'system').map(m => m.content).join('\n') || undefined, messages: msgs.filter(m => m.role !== 'system'), max_tokens, temperature }) }); j = await r.json().catch(() => ({})); t = (j.content || []).map(c => c.text || '').join(''); }
+    else if (x.kind === 'gemini') { r = await fetch(`${base}/models/${x.model}:generateContent?key=${key}`, { method: 'POST', signal: sig, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: msgs.filter(m => m.role === 'system').map(m => m.content).join('\n') || ' ' }] }, contents: msgs.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: max_tokens, temperature } }) }); j = await r.json().catch(() => ({})); t = (j?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''); }
+    else if (x.kind === 'cohere') { r = await fetch(base + '/chat', { method: 'POST', signal: sig, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model: x.model, messages: msgs, max_tokens, temperature }) }); j = await r.json().catch(() => ({})); t = (j?.message?.content || []).map(c => c.text || '').join(''); }
+    else { r = await fetch(base + '/chat/completions', { method: 'POST', signal: sig, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model: x.model, messages: msgs, max_tokens: Math.max(max_tokens, 300), temperature, ...(/gpt-oss/.test(x.model) ? { reasoning_effort: 'low' } : {}) }) }); j = await r.json().catch(() => ({})); t = j?.choices?.[0]?.message?.content || ''; }
+  } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
+  t = String(t || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return r.ok && t ? { ok: true, text: t, model: x.model } : { ok: false, err: `HTTP ${r.status}` };
+}
+export async function applyAi8(S, ai) {
+  const A = await loadAi8(); const K = A.keys || {};
+  const rot = (name, envName) => { const pool = [...new Set([S[envName], ...(K[name] || [])].filter(Boolean))]; const k = pick8(name, pool); if (k) S[envName] = k; };
+  rot('gemini', 'GEMINI_API_KEY'); rot('groq', 'GROQ_API_KEY'); rot('mistral', 'MISTRAL_API_KEY'); rot('openrouter', 'OPENROUTER_API_KEY');
+  const cf = pick8('workers_ai', K.workers_ai || []); if (cf && cf.includes(':')) { const i = cf.indexOf(':'); S.CF_AI_ACCOUNT = cf.slice(0, i); S.CF_AI_TOKEN = cf.slice(i + 1); }
+  for (const p of A.prov) if (p.enabled === false) S.AI_REST[p.name] = Date.now() + 864e5; // disabled in the dashboard
+  S.EXTRA_AI = A.prov.filter(p => p.enabled !== false && !CORE8.includes(p.name) && !['template', 'builtin59', 'cf'].includes(p.kind) && (K[p.name] || []).length).map(p => ({ ...p, keys: K[p.name] }));
+  const ok = n => n && n !== 'auto' && !(S.AI_REST[n] > Date.now()) && (CORE8.includes(n) || S.EXTRA_AI.some(x => x.name === n));
+  const route = A.route.reply, auto = A.auto.reply;
+  S.FORCE_PROVIDER = ai.forced || (ok(route) ? route : null) || (ok(auto) ? auto : null) || S.FORCE_PROVIDER;
+  S.AI8 = { route: route || 'auto', auto: auto || null, used_first: S.FORCE_PROVIDER, extra: S.EXTRA_AI.map(x => x.name) };
+}
+export const ai8Status = async () => { const A = await loadAi8(); return { route: A.route.reply || 'auto', auto: A.auto.reply || null, extra: A.prov.filter(p => !CORE8.includes(p.name) && (A.keys[p.name] || []).length).map(p => p.name), keys: Object.fromEntries(Object.entries(A.keys).map(([k, v]) => [k, v.length])) }; };
 export const PROF = [];
 // ---- process-wide write-through cache for kv53 single-key reads/writes (this process is the main kv53 writer) ----
 const KV_TTL_MS = Number(process.env.KV_CACHE_MS || 20000), KV_TTL_GLOBAL_MS = Number(process.env.KV_CACHE_GLOBAL_MS || 300000), KVC = new Map(), KVQ = new Map();
@@ -114,11 +150,12 @@ export async function runJob(job, opts = {}) {
   const sec = await loadSecrets();
   const S = Object.assign({}, sec, { PHONE_ID: '1364570600073371', SEND_VIA: 'inproc', TEST_GUARD: !!opts.test, TEST_ALLOW: opts.test ? [] : ['22997342101', '2290197342101'] });
   const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced || (process.env.AI_FIRST && !(ai.rest[process.env.AI_FIRST] > Date.now()) ? process.env.AI_FIRST : null); // AI_FIRST=groq: fastest first (<1 s) unless resting
-  S.AI_REST = ai.rest; // Système V2: shared provider health
+  S.AI_REST = { ...ai.rest }; // Système V2: shared provider health (copy: V8 adds per-job disabled flags)
+  try { await applyAi8(S, ai); } catch (e) { console.error('ai8', String(e.message || e).slice(0, 120)); }
   await prefetchUser(job).catch(() => {});
   let __CLIENTCTX = '';
   try { const v = job.body.entry[0].changes[0].value; const wa = String((v.messages && v.messages[0] && v.messages[0].from) || '').replace(/\D/g, ''); if (wa.length >= 8) { const { hist } = await histGet(wa); __CLIENTCTX = await clientCtx(wa, hist); } } catch {}
-  const ctx = vm.createContext({ __CLIENTCTX, __AIH: mesh.aiReport, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
+  const ctx = vm.createContext({ __CLIENTCTX, __AIH: mesh.aiReport, __XAI: xai, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
   script.runInContext(ctx);
   ctx.__RUNREF.t0 = Date.now();
   try { return await ctx.__entry(S, job); }

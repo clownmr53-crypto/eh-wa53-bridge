@@ -6232,12 +6232,14 @@ __name22(callWorkersAi, "callWorkersAi");
 async function runAiChain(env, msgs, { max_tokens = 320, temperature = AI_TEMP, deadline = Date.now() + AI_CLOUD_BUDGET_MS, skip = [] } = {}) {
   const errors = [];
   const __F = typeof __S !== "undefined" && __S.FORCE_PROVIDER; // V2: forced provider first (eh_ai_health.forced_until)
-  const __ORDER = __F ? [...AI_PROVIDERS.filter((x) => x.name === __F), ...AI_PROVIDERS.filter((x) => x.name !== __F)] : AI_PROVIDERS;
+  const __X = typeof __S !== "undefined" && Array.isArray(__S.EXTRA_AI) && typeof __XAI === "function" ? __S.EXTRA_AI.map((x) => ({ name: x.name, key: "__always", call: (env2, msgs2, o2) => __XAI(x, msgs2, o2) })) : []; // V8: extra providers (NVIDIA, owner-added)
+  const __ALL = [...AI_PROVIDERS, ...__X];
+  const __ORDER = __F ? [...__ALL.filter((x) => x.name === __F), ...__ALL.filter((x) => x.name !== __F)] : __ALL;
   for (const p of __ORDER) {
     const __t0 = Date.now();
     if (skip.includes(p.name))
       continue;
-    if (!env[p.key])
+    if (p.key !== "__always" && !env[p.key])
       continue;
     const left = deadline - Date.now();
     if (left < 1500) {
