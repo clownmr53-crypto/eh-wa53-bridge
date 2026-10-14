@@ -52,9 +52,10 @@ export async function applyAi8(S, ai) {
 }
 export const ai8Status = async () => { const A = await loadAi8(); return { route: A.route.reply || 'auto', auto: A.auto.reply || null, extra: A.prov.filter(p => !CORE8.includes(p.name) && (A.keys[p.name] || []).length).map(p => p.name), keys: Object.fromEntries(Object.entries(A.keys).map(([k, v]) => [k, v.length])) }; };
 // ---- V10: Electronic Bot (relay /api/v10/bot) for boss free text on the 53 ----
-async function ebot(from, text, flags) {
+async function ebot(from, text, flags, image) {
+  if (image && image.buf) image = { b64: Buffer.from(image.buf instanceof ArrayBuffer ? new Uint8Array(image.buf) : image.buf).toString('base64'), mime: image.mime };
   const sec = await loadSecrets(); if (!sec.ADMIN_KEY) return null;
-  const r = await fetch('https://eh-relay.domingohoreb.workers.dev/api/v10/bot', { method: 'POST', signal: AbortSignal.timeout(55000), headers: { 'content-type': 'application/json', 'x-eh-key': sec.ADMIN_KEY }, body: JSON.stringify({ text, from, line: '53', context: flags || '' }) });
+  const r = await fetch('https://eh-relay.domingohoreb.workers.dev/api/v10/bot', { method: 'POST', signal: AbortSignal.timeout(55000), headers: { 'content-type': 'application/json', 'x-eh-key': sec.ADMIN_KEY }, body: JSON.stringify({ text, from, line: '53', context: flags || '', image: image || undefined }) });
   const j = await r.json().catch(() => null); return j && j.ok && j.reply ? String(j.reply).slice(0, 3500) : null;
 }
 export const PROF = [];

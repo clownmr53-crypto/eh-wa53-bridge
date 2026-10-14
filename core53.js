@@ -5032,7 +5032,8 @@ async function handleOwner(env, e) {
     await sendText(env, phoneId, e.from, res.ok ? `\u2705 Photo enregistr\xE9e pour \xAB ${res.model} \xBB (${res.count} mod\xE8le(s) avec photo perso). Le bot l'enverra aux clients qui demandent une photo de ce mod\xE8le.` : `\u26A0\uFE0F Photo non enregistr\xE9e : ${res.error}`);
     return;
   }
-  if (!isText && e.media_id) {
+  const __clearAsk = !!e.context_id || !!parseOwnerMediaCaption(String(e.caption || "")) || /\b(envoie|envoyer|envoi|transf[eè]re|fais suivre|renvoie|au client|à la cliente|au 229|pour le client)\b/i.test(String(e.caption || "")); // V11: old relay only when clearly asked
+  if (!isText && e.media_id && (__clearAsk || !/^(image|document)$/.test(e.type))) {
     const tgt = await ownerMediaTarget(env, e, now);
     if (tgt) {
       await relayOwnerMedia(env, e, tgt, now);
@@ -5062,6 +5063,15 @@ async function handleOwner(env, e) {
       } catch {
       }
     });
+  }
+  if (!isText && (e.type === "image" || e.type === "document" && /^image\//.test(String(e.mime || ""))) && typeof __EBOT === "function") { // V11: boss image -> Electronic Bot (vision decides: fb, client, catalogue, question)
+    try {
+      const media = e._bytes ? { buf: e._bytes, mime: e.mime || "image/jpeg" } : await graphMediaFetch(env, e.media_id);
+      if (media && media.buf) {
+        const eb = await __EBOT(String(e.from), String(e.caption || ""), "", { buf: media.buf, mime: String(media.mime || "image/jpeg").split(";")[0] });
+        if (eb) { await sendText(env, phoneId, e.from, eb); return; }
+      }
+    } catch (err) { console.error("ebot image soft-fail", String(err && err.message || err).slice(0, 120)); }
   }
   if (isText) {
     try {
