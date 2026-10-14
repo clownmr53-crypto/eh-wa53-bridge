@@ -2293,7 +2293,7 @@ function syncReport(res) {
 __name(syncReport, "syncReport");
 __name2(syncReport, "syncReport");
 var NEVER_REPLY = /* @__PURE__ */ new Set([]);
-var OWNER_WAS = /* @__PURE__ */ new Set(["22997342101", "2290197342101"]);
+var OWNER_WAS = /* @__PURE__ */ new Set(["22997342101", "2290197342101", "22996984737", "2290196984737"]); // V10: 2nd boss 22996984737
 var OWNER_PHONE_DEFAULT = "1364570600073371";
 var WA_LINES_DEFAULT = { WA_CAISSE: "1364570600073371", WA_STATUT: "pending", WA_PROPRIO: "22997342101" };
 var LINES_STATE = globalThis.__ehLines || (globalThis.__ehLines = { at: 0, cfg: null });
@@ -4906,7 +4906,7 @@ __name(fbQueueCall, "fbQueueCall");
 async function ownerFbMode(env, e, o = {}) {
   const key = o.key || FBM_KEY, test = !!o.test, say = o.say || (async () => {
   });
-  if (String(e.from) !== FBM_OWNER)
+  if (!OWNER_WAS.has(String(e.from)))
     return false;
   const now = Math.floor(Date.now() / 1e3);
   const isText = !!e.text && (e.type === "text" || e.type === "button" || e.type === "interactive");
@@ -5349,7 +5349,7 @@ var DEBOUNCE_MS = 1500;
 var SWEEP_MIN_AGE_S = 90;
 var SWEEP_MAX_AGE_S = 30 * 60;
 var MOMO_DIGITS = "0197342101";
-var OWNER_DIGITS = ["22997342101", "97342101", "2290197342101"];
+var OWNER_DIGITS = ["22997342101", "97342101", "2290197342101", "22996984737", "96984737", "2290196984737"];
 var WAT_OFFSET_H = 1;
 var READY_RE = /\b(je\s+(le\s+|la\s+|les\s+)?(prends|prend|commande|valide|ach[eè]te)|je\s+(vais\s+)?(pay|pai|paye|paie|payer)|on\s+y\s+va|go\s+pour|ok\s+pour\s+(le|la|ça|ca)|envoie[zs]?\s+(moi\s+)?(le|ton|votre)\s+(num|momo|numéro|numero)|votre\s+(num[ée]ro\s+)?momo|comment\s+(je\s+)?(peux\s+)?(pay|pai|r[èe]gle)|comment\s+(on\s+)?(fait|proc[èe]de)\s+pour\s+(pay|acheter|commander|l'?avoir)|mode\s+de\s+paiement|moyen\s+de\s+paiement|i'?ll\s+take|i\s+take\s+it|how\s+(do|can)\s+i\s+pay|i\s+want\s+to\s+(buy|order)|send\s+(me\s+)?(the\s+)?(momo|number))\b/i;
 var PAID_RE = /\b(j'?\s?ai\s+(d[ée]j[aà]\s+)?(pay[ée]|payer|r[ée]gl[ée]|envoy[ée]\s+(l'?argent|le\s+paiement|les\s+sous|la\s+capture)|fait\s+le\s+(paiement|transfert|d[ée]p[oô]t)|effectu[ée]\s+le\s+(paiement|transfert))|paiement\s+(fait|effectu[ée]|envoy[ée])|c'?est\s+pay[ée]|transfert\s+(fait|effectu[ée])|voici\s+(la\s+)?capture|i\s+(have\s+|just\s+)?paid|payment\s+(done|sent|made))(?![a-zà-ÿ])/i;
@@ -10809,6 +10809,7 @@ async function __ownerAiText(env, body, flags) {
   return __aiFree(env, sys, user);
 }
 async function __ownerAiReply(env, phoneId, e, body, flags) {
+  try { if (typeof __EBOT === "function") { const eb = await __EBOT(String(e.from), String(body || ""), (flags || []).slice(0, 8).map((f) => `${f.name || "?"} (${f.wa_id})${f.product ? " " + f.product : ""}${f.reason ? " [" + f.reason + "]" : ""}`).join(" ; ")); if (eb) { await sendText(env, phoneId, e.from, eb); return true; } } } catch (err) { console.error("ebot soft-fail", String(err && err.message || err).slice(0, 120)); } // V10: Electronic Bot first
   const t = await __ownerAiText(env, body, flags);
   if (t) { await sendText(env, phoneId, e.from, t); return true; }
   try { await env.EH_KV.put(`aiq:owner:${e.id || Date.now()}`, JSON.stringify({ phoneId, from: e.from, body, flags: (flags || []).slice(0, 10), ts: Date.now() }), { expirationTtl: 6 * 3600 }); } catch {}

@@ -421,7 +421,7 @@ async function handleOwnEcho(m) {
 
 // ---- always-reply self-check (2026-10-13): every client inbound must get a reply within SELFCHECK_MS ----
 const SELFCHECK_MS = Number(process.env.SELFCHECK_MS || 25000);
-const OWNERS = new Set(['22997342101', '2290197342101']);
+const OWNERS = new Set(['22997342101', '2290197342101', '22996984737', '2290196984737']);
 const pend = new Map(); // phone -> { since, texts[], name, timer, inflight, skip, tries }
 const fallbackAt = new Map();
 let lastInboundAt = 0, lastOutAt = 0, lastOpenAt = 0, lastEvAt = Date.now();

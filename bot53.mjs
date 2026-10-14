@@ -51,6 +51,12 @@ export async function applyAi8(S, ai) {
   S.AI8 = { route: route || 'auto', auto: auto || null, used_first: S.FORCE_PROVIDER, extra: S.EXTRA_AI.map(x => x.name) };
 }
 export const ai8Status = async () => { const A = await loadAi8(); return { route: A.route.reply || 'auto', auto: A.auto.reply || null, extra: A.prov.filter(p => !CORE8.includes(p.name) && (A.keys[p.name] || []).length).map(p => p.name), keys: Object.fromEntries(Object.entries(A.keys).map(([k, v]) => [k, v.length])) }; };
+// ---- V10: Electronic Bot (relay /api/v10/bot) for boss free text on the 53 ----
+async function ebot(from, text, flags) {
+  const sec = await loadSecrets(); if (!sec.ADMIN_KEY) return null;
+  const r = await fetch('https://eh-relay.domingohoreb.workers.dev/api/v10/bot', { method: 'POST', signal: AbortSignal.timeout(55000), headers: { 'content-type': 'application/json', 'x-eh-key': sec.ADMIN_KEY }, body: JSON.stringify({ text, from, line: '53', context: flags || '' }) });
+  const j = await r.json().catch(() => null); return j && j.ok && j.reply ? String(j.reply).slice(0, 3500) : null;
+}
 export const PROF = [];
 // ---- process-wide write-through cache for kv53 single-key reads/writes (this process is the main kv53 writer) ----
 const KV_TTL_MS = Number(process.env.KV_CACHE_MS || 20000), KV_TTL_GLOBAL_MS = Number(process.env.KV_CACHE_GLOBAL_MS || 300000), KVC = new Map(), KVQ = new Map();
@@ -155,7 +161,7 @@ export async function runJob(job, opts = {}) {
   await prefetchUser(job).catch(() => {});
   let __CLIENTCTX = '';
   try { const v = job.body.entry[0].changes[0].value; const wa = String((v.messages && v.messages[0] && v.messages[0].from) || '').replace(/\D/g, ''); if (wa.length >= 8) { const { hist } = await histGet(wa); __CLIENTCTX = await clientCtx(wa, hist); } } catch {}
-  const ctx = vm.createContext({ __CLIENTCTX, __AIH: mesh.aiReport, __XAI: xai, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
+  const ctx = vm.createContext({ __CLIENTCTX, __AIH: mesh.aiReport, __XAI: xai, __EBOT: ebot, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
   script.runInContext(ctx);
   ctx.__RUNREF.t0 = Date.now();
   try { return await ctx.__entry(S, job); }
