@@ -7106,7 +7106,7 @@ Pr\xE9sente un \xC9VENTAIL repr\xE9sentatif adapt\xE9 \xE0 sa demande et \xE0 so
   }
   const ev = opts.events || detectEvents({ text: joined, type: opts.type || "text", meta, lastBot });
   const lang = detectLang(joined + " " + prevUsers.slice(-1).join(" "));
-  const first = opts.first != null ? !!opts.first : !(history || []).some((h) => h.role === "user");
+  const first = opts.first != null ? !!opts.first : !(history || []).some((h) => h.role === "user" || h.role === "assistant" || h.role === "owner");
   const hour = watHour(Math.floor(Date.now() / 1e3));
   const buyingIntent = ev.has("ready") || ev.has("paid") || ev.has("capture");
   const stageRank = { greeting: 0, new: 0, collecting: 1, priced: 2, wait_commit: 3, wait_pay: 4, wait_proof: 5, cod: 5, done: 6, pause: 6 };
@@ -7154,6 +7154,7 @@ ${pctx.lines.join("\n")}`);
   const dirs = opts.site ? dirs0.filter((d) => !/MoMo|97 34 21 01|paiement|payer|capture/i.test(d)) : dirs0;
   if (dirs.length)
     U.push(dirs.join("\n"));
+  if (!opts.site && globalThis.__CLIENTCTX) U.push(globalThis.__CLIENTCTX);
   if (lastBot)
     U.push(`TA DERNI\xC8RE BULLE (ne la recopie pas) : \xAB ${String(lastBot).slice(0, 200)} \xBB`);
   U.push(opts.site ? "\xC9cris maintenant ta r\xE9ponse dans le chat du SITE WEB (texte seul, 1 \xE0 4 phrases, pas de num\xE9ro de paiement)." : "\xC9cris maintenant ta prochaine bulle WhatsApp pour ce client (texte seul).");

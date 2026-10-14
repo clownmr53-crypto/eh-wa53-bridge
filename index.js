@@ -304,6 +304,14 @@ async function handleInbound(m) {
       log.info({ from, kind: msgType, ms: Date.now() - t0, ...extra, text: text.slice(0, 60) }, 'media understood');
     }
   }
+  { // 2026-10-14: quoted message (client replies to one of our bubbles) -> give the AI what was quoted
+    const ci = msg.extendedTextMessage?.contextInfo || msg.imageMessage?.contextInfo || null; const qm = ci?.quotedMessage;
+    const qt = qm ? (qm.conversation || qm.extendedTextMessage?.text || qm.imageMessage?.caption || qm.documentMessage?.caption || (qm.documentMessage ? '[document ' + (qm.documentMessage.fileName || '') + ']' : '')) : '';
+    if (qt) text = text + '\n[Il répond à ce message : « ' + String(qt).replace(/\s+/g, ' ').slice(0, 300) + ' »]';
+  }
+  if (INPROC && !OWNERS.has(from) && bot53.AGREE.test(text)) { // client agrees after a reminder -> tell the boss (relay alert route)
+    bot53.histGet(from).then(({ hist }) => { const lb = [...hist].reverse().find(h => h.role !== 'user'); if (lb && /rappel|remind/i.test(lb.via || '') && Date.now() / 1000 - (Number(lb.ts) || 0) < 7 * 86400) mesh.event('wa53_client_agrees', { text: text.slice(0, 200), via: lb.via, last: String(lb.text).slice(0, 200), name: m.pushName || null }, { wa: from, msg_id: id }); }).catch(() => {});
+  }
   const body = {
     object: 'whatsapp_business_account',
     entry: [{ id: '2333109240587511', changes: [{ field: 'messages', value: {
@@ -407,6 +415,7 @@ async function handleOwnEcho(m) {
     messaging_product: 'whatsapp', metadata: { display_phone_number: '22953632000', phone_number_id: PHONE_NUMBER_ID },
     message_echoes: [{ from: myNum, to, id: 'bridge.' + id, timestamp: String(ts || Math.floor(Date.now() / 1000)), type: m.message.conversation || m.message.extendedTextMessage ? 'text' : 'other' }] } }] }] };
   log.info(meta, 'owner echo -> bot (manual takeover)');
+  if (INPROC && ec.text) bot53.histAppend(to, 'owner', ec.text, 'phone').catch(() => {});
   await runBot(body, { from: 'echo:' + to });
 }
 
@@ -615,7 +624,7 @@ async function lockTick() {
 async function shutdown() { try { await flushAuth(); } catch {} try { await stopSock('shutdown'); if (process.env.KEEP_LOCK_ON_EXIT !== '1') await sb('POST', 'rpc/wa53_lock_release', { p_holder: INSTANCE }); } catch {} process.exit(0); }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 lockTick(); setInterval(lockTick, LOCK_HB_MS);
-mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, sendDocument, secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair, channelCreate: async (name, desc) => { if (!sock || status !== 'open') throw new Error('not connected');
+mesh.start({ getState: () => ({ leader, status, holder, me: me?.id || null, last_in_s: lastInboundAt ? Math.round((Date.now() - lastInboundAt) / 1000) : null, last_out_s: lastOutAt ? Math.round((Date.now() - lastOutAt) / 1000) : null, pend: pend.size, open_s: status === 'open' && lastOpenAt ? Math.round((Date.now() - lastOpenAt) / 1000) : 0 }), sendText, sendDocument, histAppend: (...a) => bot53 ? bot53.histAppend(...a) : Promise.resolve(), secrets: () => bot53 ? bot53.loadSecrets() : ({}), kvForget: (k) => bot53 && bot53.kvForget(k), repair, channelCreate: async (name, desc) => { if (!sock || status !== 'open') throw new Error('not connected');
     try { await sock.query({ tag: 'iq', attrs: { to: 's.whatsapp.net', xmlns: 'tos', id: sock.generateMessageTag(), type: 'set' }, content: [{ tag: 'notice', attrs: { id: '20601218', stage: '5' }, content: [] }] }); } catch (x) { console.error('[channel] tos', String(x.message || x).slice(0, 120)); } // accept Channels terms once (required before create)
     return sock.newsletterCreate(name, desc); },
   channelList: async () => { if (!sock || status !== 'open') throw new Error('not connected'); // owned/followed channels (mex xwa2_newsletter_subscribed), read-only

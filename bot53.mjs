@@ -81,13 +81,44 @@ async function HTTP0(o) {
 }
 // opts: { send(payload) -> {id}|{error}, test: bool }
 import * as mesh from './mesh53.mjs';
+// ---- 2026-10-14: conversation history written by the bridge itself (reminders, receipts, invoices, owner phone) + client file for the AI ----
+const SBH = () => ({ apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' });
+export async function histGet(wa) { const r = await HTTP({ url: KVBASE() + '?key=eq.' + encodeURIComponent('conv:' + wa) + '&select=key,value,metadata,expires_at', headers: SBH(), encoding: 'text' }); const row = JSON.parse(r.body || '[]')[0] || null; let h = []; try { h = row && row.value ? JSON.parse(row.value) : []; } catch {} return { row, hist: Array.isArray(h) ? h : [] }; }
+export async function histAppend(wa, role, text, via) {
+  wa = String(wa || '').replace(/\D/g, ''); text = String(text || '').trim(); if (wa.length < 8 || !text) return;
+  const { row, hist } = await histGet(wa); hist.push({ role, text: text.slice(0, 1500), ts: Math.floor(Date.now() / 1000), ...(via ? { via } : {}) });
+  const meta = row && row.metadata ? { ...row.metadata, ...(role !== 'user' ? { last_bot_ts: Math.floor(Date.now() / 1000) } : {}) } : null;
+  await HTTP({ url: KVBASE() + '?on_conflict=key', method: 'POST', headers: { ...SBH(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ key: 'conv:' + wa, value: JSON.stringify(hist.slice(-80)), metadata: meta, expires_at: row ? row.expires_at : null }) });
+}
+const fF = n => String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' F CFA';
+async function clientCtx(wa, hist) {
+  const lines = [];
+  try {
+    const q = async p => { const r = await fetch(SB_URL + '/rest/v1/' + p, { headers: SBH(), signal: AbortSignal.timeout(4000) }); return r.ok ? r.json() : []; };
+    const tail = wa.slice(-8);
+    const [subs, sales] = await Promise.all([q(`subscriptions?select=product,ends_on,price_fcfa,paid_fcfa,status&deleted_at=is.null&client_wa=like.*${tail}&limit=10`), q(`sales?select=product,amount_fcfa,paid_fcfa,category&client_wa=like.*${tail}&category=neq.abonnement&order=id.desc&limit=5`)]);
+    for (const s of subs) { const d = s.ends_on ? Math.round((Date.parse(s.ends_on + 'T23:59:59Z') - Date.now()) / 864e5) : null; const bal = s.price_fcfa ? Math.max(0, s.price_fcfa - (s.paid_fcfa || 0)) : null;
+      lines.push(`- Abonnement ${s.product}${s.status === 'cancelled' ? ' (annulé)' : ''} : fin le ${s.ends_on || '?'}${d != null ? (d >= 0 ? ` (dans ${d} jours)` : ` (expiré depuis ${-d} jours)`) : ''}${bal == null ? '' : bal ? ` ; déjà payé ${fF(s.paid_fcfa || 0)}, reste à payer ${fF(bal)}` : ' ; entièrement payé'}`); }
+    for (const s of sales) { const bal = Math.max(0, (s.amount_fcfa || 0) - (s.paid_fcfa || 0)); if (bal) lines.push(`- Achat ${s.product || ''} : déjà payé ${fF(s.paid_fcfa || 0)}, reste à payer ${fF(bal)}`); }
+  } catch {}
+  const now = Date.now() / 1000, recent = hist.filter(h => h && h.role !== 'user' && now - (Number(h.ts) || 0) < 7 * 86400);
+  const out = [];
+  if (lines.length) out.push('DOSSIER DU CLIENT (interne, pour comprendre sa situation ; ne récite pas tout) :\n' + lines.join('\n'));
+  if (recent.length) out.push(`CONVERSATION EN COURS : nous lui avons déjà écrit (voir HISTORIQUE, dont nos rappels / reçus / factures). Ne le salue PAS à nouveau, pas de « Bonjour », pas de « Comment puis-je vous aider ». Réagis directement à sa réponse, comme un vendeur humain qui le connaît.`);
+  const lastOur = [...hist].reverse().find(h => h && h.role !== 'user'); if (lastOur && /rappel/.test(lastOur.via || '')) out.push(`PRIORITAIRE — IL RÉPOND À NOTRE ${/paiement|payment/.test(lastOur.via) ? 'RAPPEL DE PAIEMENT' : "RAPPEL D'ABONNEMENT"} (ces règles passent avant toute consigne de paiement ou de commande ci-dessus).` + (/paiement|payment/.test(lastOur.via) ? '' : " Si le DOSSIER dit que l'abonnement est entièrement payé, NE PARLE PAS DE PAIEMENT ni de numéro MoMo : remercie-le et dis qu'on le recontactera à l'approche de l'échéance pour le renouvellement (s'il veut renouveler dès maintenant, il n'a qu'à nous le dire)."));
+  out.push(`RÉPONSES COURTES (« d'accord », « ok », « oui », « merci », pouce…) : comprends-les par rapport à NOTRE dernier message. Après un rappel d'abonnement : remercie-le brièvement et donne la suite (s'il veut renouveler maintenant, dis comment faire ; sinon, qu'on le recontactera à l'approche de l'échéance). Après un rappel de paiement : remercie et indique simplement comment régler le reste (Mobile Money ou espèces). Jamais de texte figé ni de formule toute faite : 1 à 2 phrases naturelles, brèves. Ne cite aucun montant sauf le reste à payer du DOSSIER s'il est utile.`);
+  return out.join('\n\n');
+}
+export const AGREE = /^\s*(d'?\s?accord|dac+|ok+|okay|oui|ouais|yes|ça marche|ca marche|entendu|parfait|volontiers|pas de souci|pas de probl[eè]me|je (vais |veux )?(renouvel|pay|r[ée]gl|envoy)|c'?est bon|👍)/i;
 export async function runJob(job, opts = {}) {
   const sec = await loadSecrets();
   const S = Object.assign({}, sec, { PHONE_ID: '1364570600073371', SEND_VIA: 'inproc', TEST_GUARD: !!opts.test, TEST_ALLOW: opts.test ? [] : ['22997342101', '2290197342101'] });
   const ai = mesh.aiState(); S.FORCE_PROVIDER = ai.forced || (process.env.AI_FIRST && !(ai.rest[process.env.AI_FIRST] > Date.now()) ? process.env.AI_FIRST : null); // AI_FIRST=groq: fastest first (<1 s) unless resting
   S.AI_REST = ai.rest; // Système V2: shared provider health
   await prefetchUser(job).catch(() => {});
-  const ctx = vm.createContext({ __AIH: mesh.aiReport, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
+  let __CLIENTCTX = '';
+  try { const v = job.body.entry[0].changes[0].value; const wa = String((v.messages && v.messages[0] && v.messages[0].from) || '').replace(/\D/g, ''); if (wa.length >= 8) { const { hist } = await histGet(wa); __CLIENTCTX = await clientCtx(wa, hist); } } catch {}
+  const ctx = vm.createContext({ __CLIENTCTX, __AIH: mesh.aiReport, Buffer, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, console, __HTTP: HTTP, __S: S, __SEND: opts.send });
   script.runInContext(ctx);
   ctx.__RUNREF.t0 = Date.now();
   try { return await ctx.__entry(S, job); }

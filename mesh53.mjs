@@ -77,7 +77,7 @@ async function exec(c) {
       if (c.action === 'send_reminder' && !text) text = await aiText(await ctx.secrets(), `Écris un rappel amical de renouvellement d'abonnement (${p.product || 'abonnement'}) à ${p.name || 'ce client'}, qui a demandé à être prévenu.`);
       if (!text) return { ok: false, error: 'IA indisponible' };
       if (BANNED.test(text)) return { ok: false, error: 'mot interdit' };
-      const out = await ctx.sendText(wa, text); outbound(wa, out.id, 'command:' + c.action);
+      const out = await ctx.sendText(wa, text); outbound(wa, out.id, 'command:' + c.action); if (ctx.histAppend) ctx.histAppend(wa, 'assistant', text, p.via || c.action).catch(() => {});
       return { ok: true, wa, wid: out.id, text: text.slice(0, 300) };
     }
     case 'send_document': {
@@ -85,7 +85,7 @@ async function exec(c) {
       if (!c.confirmed_at) return { ok: false, error: 'confirmation requise' };
       if (p.caption && BANNED.test(p.caption)) return { ok: false, error: 'mot interdit' };
       if (!ctx.sendDocument) return { ok: false, error: 'non supporté' };
-      const out = await ctx.sendDocument(wa, p.url, p.filename, p.caption); outbound(wa, out.id, 'command:send_document');
+      const out = await ctx.sendDocument(wa, p.url, p.filename, p.caption); outbound(wa, out.id, 'command:send_document'); if (ctx.histAppend) ctx.histAppend(wa, 'assistant', `[Document envoyé : ${p.filename}] ${p.caption || ''}`, p.via || 'document').catch(() => {});
       return { ok: true, wa, wid: out.id, file: p.filename };
     }
     case 'force_provider': return { ok: true, note: 'appliqué via eh_ai_health.forced_until (lu chaque minute)' };
