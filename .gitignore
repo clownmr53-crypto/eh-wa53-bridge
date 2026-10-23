@@ -1,6 +1,4 @@
 .env
-.auth/
-auth_sync.json
-automated_texts.json
 node_modules/
+data/
 *.log
